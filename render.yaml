@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: discord-bot
+    env: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: MIRROR_WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
