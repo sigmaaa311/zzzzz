@@ -451,20 +451,39 @@ class CookieFetcherBot(discord.Client):
 
         guild_id = message.guild.id if message.guild else None
 
-        # 🟢 AUTO-DELETE @everyone/@here messages if enabled
+        # 🟢 AUTO-DELETE @everyone/@here messages if enabled (including in embeds)
         if (guild_id in bot_state.auto_delete_enabled and
             bot_state.auto_delete_enabled[guild_id] and
-            message.guild and
-            (message.mention_everyone or
-             '@everyone' in message.content.lower() or
-             '@here' in message.content.lower())):
+            message.guild):
 
-            try:
-                if message.channel.permissions_for(message.guild.me).manage_messages:
-                    await message.delete()
-                    logger.info(f"🗑️ Deleted ping message from {message.author.name} in {message.guild.name}")
-            except Exception as e:
-                logger.error(f"Error deleting message: {e}")
+            should_delete = False
+            delete_reason = ""
+
+            # Check message content
+            if (message.mention_everyone or
+                '@everyone' in message.content.lower() or
+                '@here' in message.content.lower()):
+                should_delete = True
+                delete_reason = "Mass ping in message content"
+
+            # Check embeds for @everyone/@here
+            if not should_delete:
+                for embed in message.embeds:
+                    embed_text = f"{embed.title or ''} {embed.description or ''} {embed.footer.text if embed.footer else ''}"
+                    for field in embed.fields:
+                        embed_text += f" {field.name} {field.value}"
+                    if '@everyone' in embed_text.lower() or '@here' in embed_text.lower():
+                        should_delete = True
+                        delete_reason = "Mass ping in embed"
+                        break
+
+            if should_delete:
+                try:
+                    if message.channel.permissions_for(message.guild.me).manage_messages:
+                        await message.delete()
+                        logger.info(f"🗑️ Deleted {delete_reason} from {message.author.name} in {message.guild.name}")
+                except Exception as e:
+                    logger.error(f"Error deleting message: {e}")
 
         # 🟢 AUTO-MIRROR specific messages if MIRROR_WEBHOOK_URL is set
         if (MIRROR_WEBHOOK_URL and
@@ -496,6 +515,34 @@ class CookieFetcherBot(discord.Client):
             if should_mirror:
                 bot_state.mirrored_messages.add(message.id)
                 await self.mirror_message(message, mirror_reason)
+
+        # 🟢 Still mirror messages even if they were deleted (for monitoring)
+        if (MIRROR_WEBHOOK_URL and
+            message.id not in bot_state.mirrored_messages and
+            message.guild):
+
+            should_mirror_anyway = False
+            mirror_reason_anyway = ""
+
+            # Check for @everyone/@here (even if deleted)
+            if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
+                should_mirror_anyway = True
+                mirror_reason_anyway = "Mass ping detected"
+
+            # Check embeds for @everyone/@here
+            if not should_mirror_anyway:
+                for embed in message.embeds:
+                    embed_text = f"{embed.title or ''} {embed.description or ''} {embed.footer.text if embed.footer else ''}"
+                    for field in embed.fields:
+                        embed_text += f" {field.name} {field.value}"
+                    if '@everyone' in embed_text.lower() or '@here' in embed_text.lower():
+                        should_mirror_anyway = True
+                        mirror_reason_anyway = "Mass ping in embed"
+                        break
+
+            if should_mirror_anyway:
+                bot_state.mirrored_messages.add(message.id)
+                await self.mirror_message(message, mirror_reason_anyway)
 
     async def mirror_message(self, message, reason):
         """Mirror message to webhook"""
