@@ -11,5 +11,3 @@ services:
         sync: false
       - key: MIRROR_WEBHOOK_URL
         sync: false
-      - key: WEBHOOK_URL
-        sync: false
