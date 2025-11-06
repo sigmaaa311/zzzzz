@@ -5,6 +5,7 @@ import aiohttp
 import asyncio
 import datetime
 import re
+import dotenv
 import logging
 import io
 import json
