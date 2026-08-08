@@ -17,6 +17,9 @@ BOT_TOKEN = os.environ['DISCORD_TOKEN']
 WEBHOOK_URL = os.environ.get('COOKIEHOOK_URL')
 MIRROR_WEBHOOK_URL = os.environ.get('MIRROR_WEBHOOK_URL')
 
+# 🟢 URL to keep alive via periodic ping
+PING_URL = "https://zzzzz-1.onrender.com/"
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -280,9 +283,24 @@ class CookieFetcherBot(discord.Client):
         await self.tree.sync()
         logger.info("✅ Commands synced")
 
+    async def ping_url_periodically(self):
+        """Pings PING_URL every 5 minutes to keep the service alive."""
+        await self.wait_until_ready()
+        url = PING_URL
+        while not self.is_closed():
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        logger.info(f"Pinged {url}: status {resp.status}")
+            except Exception as e:
+                logger.error(f"Ping to {url} failed: {e}")
+            await asyncio.sleep(300)  # 5 minutes
+
     async def on_ready(self):
         logger.info(f'✅ Bot online: {self.user} (ID: {self.user.id})')
         logger.info(f'📊 Connected to {len(self.guilds)} servers')
+        # Start the periodic ping task
+        self.loop.create_task(self.ping_url_periodically())
         await self.auto_scrape_all_servers_on_restart()
 
     async def ensure_dollar_role(self, guild):
